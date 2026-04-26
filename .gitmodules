@@ -1,0 +1,3 @@
+[submodule "ninja"]
+    path = ninja
+    url = git@github.com:ninja-build/ninja.git
