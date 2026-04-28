@@ -1,0 +1,31 @@
+timestamp,severity,source,message,response_ms
+2024-01-15T08:00:01,INFO,auth,User login successful,45
+2024-01-15T08:00:02,DEBUG,db,Connection pool initialized,12
+2024-01-15T08:00:03,INFO,api,GET /api/users responded,120
+2024-01-15T08:00:04,WARN,api,Rate limit approaching for client 192.168.1.50,89
+2024-01-15T08:00:05,INFO,auth,Token refreshed for user admin,23
+2024-01-15T08:00:06,ERROR,db,Query timeout after 5000ms on table orders,5000
+2024-01-15T08:00:07,INFO,api,POST /api/orders responded,340
+2024-01-15T08:00:08,DEBUG,cache,Cache hit ratio: 87.3%,2
+2024-01-15T08:00:09,WARN,auth,Failed login attempt from 10.0.0.99,15
+2024-01-15T08:00:10,INFO,scheduler,Cron job cleanup_temp started,0
+2024-01-15T08:00:11,INFO,api,GET /api/products responded,67
+2024-01-15T08:00:12,ERROR,api,Internal server error on POST /api/payments,890
+2024-01-15T08:00:13,INFO,db,Slow query detected: SELECT * FROM analytics,3200
+2024-01-15T08:00:14,DEBUG,cache,Evicted 142 stale entries,8
+2024-01-15T08:00:15,FATAL,db,Connection pool exhausted — all 50 connections in use,0
+2024-01-15T08:00:16,INFO,auth,User logout: admin,5
+2024-01-15T08:00:17,WARN,scheduler,Job backup_db running longer than expected,45000
+2024-01-15T08:00:18,INFO,api,GET /api/dashboard responded,210
+2024-01-15T08:00:19,ERROR,auth,"Authentication service unreachable, retrying",0
+2024-01-15T08:00:20,INFO,api,GET /api/health responded,3
+2024-01-15T08:00:21,DEBUG,db,Index rebuild completed for table users,15200
+2024-01-15T08:00:22,WARN,api,Deprecated endpoint /v1/users called,34
+2024-01-15T08:00:23,INFO,cache,Cache warmed: 2048 entries loaded,890
+2024-01-15T08:00:24,INFO,api,PUT /api/users/42 responded,78
+2024-01-15T08:00:25,ERROR,scheduler,Job send_reports failed: SMTP connection refused,0
+2024-01-15T08:00:26,INFO,auth,New API key generated for service payment-gateway,12
+2024-01-15T08:00:27,DEBUG,api,Request tracing enabled for correlation-id abc123,1
+2024-01-15T08:00:28,WARN,db,Replication lag detected: 2.3 seconds behind primary,0
+2024-01-15T08:00:29,INFO,api,DELETE /api/sessions/expired responded,156
+2024-01-15T08:00:30,INFO,scheduler,Cron job cleanup_temp completed in 20s,20000
