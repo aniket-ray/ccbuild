@@ -1,0 +1,4 @@
+#ifndef CCBUILD_TARGET_H
+#define CCBUILD_TARGET_H
+
+#endif  // CCBUILD_TARGET_H
