@@ -1,4 +1,3 @@
 [submodule "ninja"]
     path = ninja
-    url = https://github.com/ninja-build/ninja.git
-    ignore = dirty
+    url = git@github.com:ninja-build/ninja.git
