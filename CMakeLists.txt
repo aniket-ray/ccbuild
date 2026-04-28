@@ -5,6 +5,26 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# code coverage (-DCCBUILD_COVERAGE=ON)
+# Flags applied per-target (ccbuildlib, ninjacore, ccbuild_tests) so that the
+# ccbuild CLI binary and the libraries it ships for end-user linking are NOT
+# polluted with profiler runtime references.
+option(CCBUILD_COVERAGE "Enable code coverage instrumentation" ON)
+if (CCBUILD_COVERAGE)
+    message(STATUS "Code coverage enabled")
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+        message(STATUS "   Using Clang source-based coverage (llvm-cov)")
+        set(CCBUILD_COVERAGE_COMPILE_FLAGS -fprofile-instr-generate -fcoverage-mapping)
+        set(CCBUILD_COVERAGE_LINK_FLAGS -fprofile-instr-generate)
+        set(CCBUILD_COVERAGE_CLANG TRUE)
+    else ()
+        message(STATUS "   Using GCC gcov coverage (lcov)")
+        set(CCBUILD_COVERAGE_COMPILE_FLAGS --coverage -fprofile-arcs -ftest-coverage)
+        set(CCBUILD_COVERAGE_LINK_FLAGS --coverage)
+        set(CCBUILD_COVERAGE_CLANG FALSE)
+    endif ()
+endif ()
+
 # ninja core - static library from ninja submodule (POSIX/Linux)
 add_library(ninjacore STATIC
         ninja/src/build_log.cc
@@ -43,6 +63,10 @@ add_library(ninjacore STATIC
 
 target_include_directories(ninjacore PUBLIC ninja/src)
 target_compile_options(ninjacore PRIVATE -w)
+if (CCBUILD_COVERAGE)
+    target_compile_options(ninjacore PRIVATE ${CCBUILD_COVERAGE_COMPILE_FLAGS})
+    target_link_options(ninjacore PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
+endif ()
 
 # ninja uses ppoll on Linux when available
 include(CheckCXXSymbolExists)
@@ -54,6 +78,12 @@ endif ()
 # ccbuild library
 add_library(ccbuildlib STATIC
         src/core/target.cc
+        src/targets/executable.cc
+        src/targets/static_library.cc
+        src/internal/ninja_bridge.cc
+        src/internal/compiler.cc
+        src/internal/compiler.h
+        src/project/project.cc
 )
 
 target_include_directories(ccbuildlib
@@ -62,7 +92,11 @@ target_include_directories(ccbuildlib
         PRIVATE src
 )
 target_compile_features(ccbuildlib PUBLIC cxx_std_20)
-target_link_libraries(ccbuildlib PUBLIC ninjacorea)
+target_link_libraries(ccbuildlib PUBLIC ninjacore)
+if (CCBUILD_COVERAGE)
+    target_compile_options(ccbuildlib PRIVATE ${CCBUILD_COVERAGE_COMPILE_FLAGS})
+    target_link_options(ccbuildlib PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
+endif ()
 
 # ccbuild cli
 add_executable(ccbuild src/main.cc)
@@ -73,6 +107,18 @@ target_compile_definitions(ccbuild PRIVATE
         CCBUILD_LIB_DIR="${CMAKE_BINARY_DIR}"
         CCBUILD_NINJA_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/ninja/src"
 )
+
+# When libraries are coverage-instrumented, the runner must also link with
+# the profiler runtime, otherwise we get undefined ___llvm_profile_runtime.
+if (CCBUILD_COVERAGE)
+    if (CCBUILD_COVERAGE_CLANG)
+        target_compile_definitions(ccbuild PRIVATE
+                CCBUILD_COVERAGE_LINK_FLAGS="-fprofile-instr-generate")
+    else ()
+        target_compile_definitions(ccbuild PRIVATE
+                CCBUILD_COVERAGE_LINK_FLAGS="--coverage")
+    endif ()
+endif ()
 
 # tests
 include(CTest)
@@ -90,12 +136,85 @@ if (BUILD_TESTING)
 
     add_executable(ccbuild_tests
             tests/core/target_test.cc
+            tests/targets/executable_test.cc
+            tests/targets/static_library_test.cc
+            tests/internal/validators_test.cc
+            tests/internal/compiler_test.cc
+            tests/project/project_test.cc
     )
 
     target_link_libraries(ccbuild_tests PRIVATE ccbuildlib GTest::gtest_main)
     target_include_directories(ccbuild_tests PRIVATE src)
+    if (CCBUILD_COVERAGE)
+        target_compile_options(ccbuild_tests PRIVATE ${CCBUILD_COVERAGE_COMPILE_FLAGS})
+        target_link_options(ccbuild_tests PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
+    endif ()
     include(GoogleTest)
     gtest_discover_tests(ccbuild_tests)
+
+    # coverage report
+    if (CCBUILD_COVERAGE)
+        if (CCBUILD_COVERAGE_CLANG)
+            find_program(LLVM_PROFDATA llvm-profdata
+                    HINTS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin)
+            find_program(LLVM_COV llvm-cov
+                    HINTS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin)
+            if (LLVM_PROFDATA AND LLVM_COV)
+                add_custom_target(coverage
+                        COMMENT "Generating code coverage report (Clang)..."
+                        COMMAND ${CMAKE_COMMAND} -E env
+                        LLVM_PROFILE_FILE=ccbuild_tests.profraw
+                        $<TARGET_FILE:ccbuild_tests>
+                        COMMAND ${LLVM_PROFDATA} merge -sparse
+                        ccbuild_tests.profraw -o ccbuild_tests.profdata
+                        COMMAND ${LLVM_COV} show $<TARGET_FILE:ccbuild_tests>
+                        -instr-profile=ccbuild_tests.profdata
+                        -format=html
+                        -output-dir=coverage-report
+                        -show-line-counts-or-regions
+                        -show-branches=count
+                        -ignore-filename-regex='ninja/|_deps/|tests/|/usr/'
+                        COMMAND ${LLVM_COV} report $<TARGET_FILE:ccbuild_tests>
+                        -instr-profile=ccbuild_tests.profdata
+                        -ignore-filename-regex='ninja/|_deps/|tests/|/usr/'
+                        COMMAND ${CMAKE_COMMAND} -E echo
+                        "Coverage report: ${CMAKE_BINARY_DIR}/coverage-report/index.html"
+                        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+                        DEPENDS ccbuild_tests
+                )
+            else ()
+                message(WARNING "llvm-profdata/llvm-cov not found — 'coverage' target disabled."
+                        " Install LLVM: brew install llvm")
+            endif ()
+        else ()
+            find_program(LCOV lcov)
+            find_program(GENHTML genhtml)
+            if (LCOV AND GENHTML)
+                add_custom_target(coverage
+                        COMMENT "Generating code coverage report (GCC)..."
+                        COMMAND ${LCOV} --directory . --zerocounters
+                        COMMAND $<TARGET_FILE:ccbuild_tests>
+                        COMMAND ${LCOV} --directory . --capture --output-file coverage.info
+                        --rc branch_coverage=1 --ignore-errors mismatch
+                        COMMAND ${LCOV} --remove coverage.info
+                        '*/ninja/*' '*/tests/*' '/usr/*' '*/_deps/*'
+                        --output-file coverage.filtered.info
+                        --rc branch_coverage=1 --ignore-errors unused
+                        COMMAND ${GENHTML} coverage.filtered.info
+                        --output-directory coverage-report
+                        --branch-coverage
+                        --title "ccbuild coverage"
+                        --ignore-errors mismatch
+                        COMMAND ${CMAKE_COMMAND} -E echo
+                        "Coverage report: ${CMAKE_BINARY_DIR}/coverage-report/index.html"
+                        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+                        DEPENDS ccbuild_tests
+                )
+            else ()
+                message(WARNING "lcov/genhtml not found — 'coverage' target disabled. Install lcov.")
+            endif ()
+        endif ()
+    endif ()
 endif ()
 
 

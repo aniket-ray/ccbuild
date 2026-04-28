@@ -9,7 +9,7 @@ namespace ccbuild {
 enum class TargetKind { Executable, StaticLibrary };
 
 template <typename R>
-concept SourceKind =
+concept SourceRange =
     std::ranges::input_range<R> &&
     std::convertible_to<std::ranges::range_value_t<R>, std::string>;
 }  // namespace ccbuild

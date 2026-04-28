@@ -9,3 +9,19 @@ build/
 
 # OS
 .DS_Store
+
+# coverage artifacts
+*.gcno
+*.gcda
+*.info
+*.profraw
+coverage-report/
+
+# cache
+.cache/
+
+# cmake
+cmake-build-debug/
+
+# ccbuild dir
+**/.ccbuild/
