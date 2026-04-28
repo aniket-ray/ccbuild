@@ -1,6 +1,8 @@
 #ifndef CCBUILD_PROJECT_H
 #define CCBUILD_PROJECT_H
 
+#include <memory>
+
 #include "ccbuild/executable.h"
 #include "ccbuild/static_library.h"
 

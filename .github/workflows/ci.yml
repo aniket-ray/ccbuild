@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, development]
+  pull_request:
+    branches: [main, master, development]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  format:
+    name: Code Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+
+      - name: Check Formatting
+        run: find src include examples tests -name '*.cc' -o -name '*.h' | xargs clang-format --Werror --dry-run
+
+  build:
+    name: Build (Linux x86_64)
+    needs: format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ cmake lcov
+
+      - name: Configure
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCCBUILD_COVERAGE=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Save build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-build
+          path: build/
+          include-hidden-files: true
+
+  test:
+    name: Test & Coverage
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ cmake lcov
+
+      - name: Restore build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: compiled-build
+          path: build/
+
+      - name: Fix executable permissions
+        run: chmod +x build/ccbuild build/ccbuild_tests
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Generate coverage report
+        run: cmake --build build --target coverage
+
+      - name: Upload coverage HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: build/coverage-report/
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: build/coverage.filtered.info
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

@@ -1,5 +1,6 @@
 #ifndef CCBUILD_COMPILER_H
 #define CCBUILD_COMPILER_H
+#include <optional>
 #include <string>
 
 namespace ccbuild {

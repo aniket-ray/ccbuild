@@ -72,7 +72,7 @@ endif ()
 include(CheckCXXSymbolExists)
 check_cxx_symbol_exists(ppoll poll.h HAVE_PPOLL)
 if (HAVE_PPOLL)
-    target_compile_definitions(ninjacore PRIVATEW USE_PPOLL=1)
+    target_compile_definitions(ninjacore PRIVATE USE_PPOLL=1)
 endif ()
 
 # ccbuild library
