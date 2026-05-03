@@ -6,6 +6,7 @@
 #include <string>
 
 namespace ccbuild {
+enum class Visibility { Public, Private, Interface };
 enum class TargetKind { Executable, StaticLibrary };
 
 template <typename R>
