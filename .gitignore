@@ -9,3 +9,9 @@ build/
 
 # OS
 .DS_Store
+.cache/
+
+*.profraw
+
+# ccbuild self dir
+**/.ccbuild/
