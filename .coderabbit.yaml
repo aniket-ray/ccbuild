@@ -1,0 +1,37 @@
+language: en
+early_access: false
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  path_filters:
+    - "!ninja/**"
+    - "!build/**"
+    - "!_deps/**"
+    - "!*.md"
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+      - development
+  path_instructions:
+    - path: "src/**/*.{cc,h}"
+      instructions: |
+        Review for:
+        - Modern C++20 practices (RAII, smart pointers, constexpr)
+        - Correct use of std::expected and std::optional
+        - No raw new/delete, prefer std::unique_ptr/std::vector
+        - Performance: avoid unnecessary copies, use std::move
+    - path: "tests/**/*.cc"
+      instructions: |
+        Review for:
+        - gtest best practices: clear test names, one assertion concept per test
+        - Use EXPECT_* for non-fatal, ASSERT_* only when critical
+        - Test edge cases, not just happy paths
+        - Test fixtures for shared setup
+chat:
+  auto_reply: true
