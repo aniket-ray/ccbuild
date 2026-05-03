@@ -6,11 +6,14 @@ StaticLibrary::StaticLibrary(std::string_view name,
     : Target(name, std::move(sources)) {}
 
 std::string StaticLibrary::output_filename() const {
+  static constexpr std::string_view kLibPrefix = ".ccbuild/lib/lib";
+  static constexpr std::string_view kLibSuffix = ".a";
+
   std::string result;
-  result.reserve(16 + name().size() + 2);
-  result += ".ccbuild/lib/lib";
+  result.reserve(kLibPrefix.size() + name().size() + kLibSuffix.size());
+  result += kLibPrefix;
   result += name();
-  result += ".a";
+  result += kLibSuffix;
   return result;
 }
 

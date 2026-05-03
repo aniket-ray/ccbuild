@@ -14,7 +14,7 @@ Target& Target::link(Target& dep) {
     throw std::invalid_argument("cannot link against executable '" +
                                 std::string(dep.name()) + "'");
   }
-  link_deps_.emplace_back(&dep);
+  link_deps_.emplace_back(dep);
   return *this;
 }
 
@@ -27,14 +27,47 @@ std::string Target::object_path(std::string_view source) const {
   auto dot = source.rfind('.');
   auto stem = (dot != std::string_view::npos) ? source.substr(0, dot) : source;
 
+  static constexpr std::string_view kObjPrefix = ".ccbuild/obj/";
+  static constexpr std::string_view kObjSuffix = ".o";
+
   std::string result;
-  result.reserve(13 + name_.size() + 1 + stem.size() + 2);
-  result += ".ccbuild/obj/";
+  result.reserve(kObjPrefix.size() + name_.size() + 1 + stem.size() +
+                 kObjSuffix.size());
+  result += kObjPrefix;
   result += name_;
   result += '/';
   result += stem;
-  result += ".o";
+  result += kObjSuffix;
   return result;
+}
+
+Target& Target::add_include_dirs(std::initializer_list<std::string> dirs,
+                                 Visibility vis) {
+  auto& target = [&]() -> std::vector<std::string>& {
+    switch (vis) {
+    case Visibility::Private:
+      return private_include_dirs_;
+    case Visibility::Public:
+      return public_include_dirs_;
+    case Visibility::Interface:
+      return interface_include_dirs_;
+    }
+    return public_include_dirs_;
+  }();
+  target.insert(target.end(), dirs.begin(), dirs.end());
+  return *this;
+}
+
+std::span<const std::string> Target::include_dirs(Visibility vis) const {
+  switch (vis) {
+  case Visibility::Private:
+    return private_include_dirs_;
+  case Visibility::Public:
+    return public_include_dirs_;
+  case Visibility::Interface:
+    return interface_include_dirs_;
+  }
+  return {};
 }
 
 }  // namespace ccbuild

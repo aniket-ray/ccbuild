@@ -1,6 +1,7 @@
 #ifndef CCBUILD_TARGET_H
 #define CCBUILD_TARGET_H
 
+#include <functional>
 #include <initializer_list>
 #include <span>
 #include <string>
@@ -40,7 +41,8 @@ class Target {
 
   /// link dependencies
   Target& link(Target& dep);
-  [[nodiscard]] std::span<Target* const> link_deps() const {
+  [[nodiscard]] std::span<const std::reference_wrapper<Target>> link_deps()
+      const {
     return link_deps_;
   }
 
@@ -49,6 +51,11 @@ class Target {
   [[nodiscard]] std::span<const std::string> compile_options() const {
     return compile_options_;
   }
+
+  /// include directories with visibility
+  Target& add_include_dirs(std::initializer_list<std::string> dirs,
+                           Visibility vis);
+  [[nodiscard]] std::span<const std::string> include_dirs(Visibility vis) const;
 
   [[nodiscard]] std::string object_path(std::string_view source) const;
 
@@ -64,8 +71,11 @@ class Target {
 
   std::string name_;
   std::vector<std::string> sources_;
-  std::vector<Target*> link_deps_;
+  std::vector<std::reference_wrapper<Target>> link_deps_;
   std::vector<std::string> compile_options_;
+  std::vector<std::string> private_include_dirs_;
+  std::vector<std::string> public_include_dirs_;
+  std::vector<std::string> interface_include_dirs_;
 };
 
 }  // namespace ccbuild

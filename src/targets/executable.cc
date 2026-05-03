@@ -5,9 +5,11 @@ Executable::Executable(std::string_view name, std::vector<std::string> sources)
     : Target(name, std::move(sources)) {}
 
 std::string Executable::output_filename() const {
+  static constexpr std::string_view kBinPrefix = ".ccbuild/bin/";
+
   std::string result;
-  result.reserve(14 + name().size());
-  result += ".ccbuild/bin/";
+  result.reserve(kBinPrefix.size() + name().size());
+  result += kBinPrefix;
   result += name();
   return result;
 }
