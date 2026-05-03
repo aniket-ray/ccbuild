@@ -35,97 +35,78 @@ StaticLibrary& Project::add_library(
   return *ptr;
 }
 
-bool Project::validate(std::string& err) const {
-  // Check for duplicate target names.
+std::optional<std::string> Project::validate() const {
   std::set<std::string_view> names;
   for (const auto& t : targets_) {
     if (!names.insert(t->name()).second) {
-      err = "duplicate target name: '";
-      err += t->name();
-      err += "'";
-      return false;
+      return std::string("duplicate target name: '") + std::string(t->name()) +
+             "'";
     }
   }
 
-  // Check for empty sources.
   for (const auto& t : targets_) {
     if (t->sources().empty()) {
-      err = "target '";
-      err += t->name();
-      err += "' has no sources";
-      return false;
+      return std::string("target '") + std::string(t->name()) +
+             "' has no sources";
     }
   }
 
-  // Check for invalid source file extensions.
   for (const auto& t : targets_) {
     for (const auto& src : t->sources()) {
       if (!validators::is_cpp_source(src)) {
-        err = "target '";
-        err += t->name();
-        err += "' has invalid source file: '";
-        err += src;
-        err += "' (expected .cc, .cpp, .cxx, .c++, .c, or .C)";
-        return false;
+        return std::string("target '") + std::string(t->name()) +
+               "' has invalid source file: '" + src +
+               "' (expected .cc, .cpp, .cxx, .c++, .c, or .C)";
       }
     }
   }
 
-  // check execs only link against libraries, not other execs
   for (const auto& t : targets_) {
-    for (const auto* dep : t->link_deps()) {
-      if (dep->kind() == TargetKind::Executable) {
-        err = "target '";
-        err += t->name();
-        err += "' links against executable '";
-        err += dep->name();
-        err += "' (can only link against libraries)";
-        return false;
+    for (const Target& dep : t->link_deps()) {
+      if (dep.kind() == TargetKind::Executable) {
+        return std::string("target '") + std::string(t->name()) +
+               "' links against executable '" + std::string(dep.name()) +
+               "' (can only link against libraries)";
       }
     }
   }
 
-  // Check for link cycles via DFS.
-  enum Mark { None, InStack, Done };
-  std::map<const Target*, Mark> marks;
+  enum class Mark { none, in_stack, done };
+  std::map<std::string_view, Mark, std::less<>> marks;
 
-  std::function<bool(const Target*)> visit = [&](const Target* t) -> bool {
-    marks[t] = InStack;
-    for (const Target* dep : t->link_deps()) {
-      if (marks[dep] == InStack) {
-        err = "link cycle involving '";
-        err += t->name();
-        err += "' and '";
-        err += dep->name();
-        err += "'";
-        return false;
+  std::function<std::optional<std::string>(const Target&)> visit =
+      [&](const Target& t) -> std::optional<std::string> {
+    marks[t.name()] = Mark::in_stack;
+    for (const Target& dep : t.link_deps()) {
+      if (marks[dep.name()] == Mark::in_stack) {
+        return std::string("link cycle involving '") + std::string(t.name()) +
+               "' and '" + std::string(dep.name()) + "'";
       }
-      if (marks[dep] == None && !visit(dep))
-        return false;
+      if (marks[dep.name()] == Mark::none)
+        if (auto err = visit(dep))
+          return err;
     }
-    marks[t] = Done;
-    return true;
+    marks[t.name()] = Mark::done;
+    return std::nullopt;
   };
 
   for (const auto& t : targets_) {
-    if (marks[t.get()] == None && !visit(t.get()))
-      return false;
+    if (marks[t->name()] == Mark::none)
+      if (auto err = visit(*t))
+        return err;
   }
 
-  return true;
+  return std::nullopt;
 }
 
 int Project::build(bool dry_run) {
   using enum TargetKind;
 
-  // Validate.
-  std::string err;
-  if (!validate(err)) {
-    fprintf(stderr, "ccbuild: error: %s\n", err.c_str());
+  if (auto err = validate()) {
+    fprintf(stderr, "ccbuild: error: %s\n", err->c_str());
     return 1;
   }
 
-  // Print build plan.
   printf("ccbuild: project '%s' (C++%d)\n", name_.c_str(), standard_);
 
   size_t compile_count = 0;
@@ -146,13 +127,11 @@ int Project::build(bool dry_run) {
     printf("  target '%.*s' [%s] -> %s\n", static_cast<int>(t->name().size()),
            t->name().data(), kind_str, t->output_filename().c_str());
 
-    // Sources.
     printf("    sources:");
     for (const auto& src : t->sources())
       printf(" %s", src.c_str());
     printf("\n");
 
-    // Compile options.
     if (!t->compile_options().empty()) {
       printf("    options:");
       for (const auto& opt : t->compile_options())
@@ -160,18 +139,32 @@ int Project::build(bool dry_run) {
       printf("\n");
     }
 
-    // Link dependencies.
+    static constexpr int kVisibilityCount = 3;
+    const char* include_labels[] = { nullptr, nullptr, nullptr };
+    include_labels[static_cast<int>(Visibility::Public)] = "includes (PUBLIC):";
+    include_labels[static_cast<int>(Visibility::Private)] =
+        "includes (PRIVATE):";
+    include_labels[static_cast<int>(Visibility::Interface)] =
+        "includes (INTERFACE):";
+    for (int v = 0; v < kVisibilityCount; ++v) {
+      auto dirs = t->include_dirs(static_cast<Visibility>(v));
+      if (!dirs.empty()) {
+        printf("    %s", include_labels[v]);
+        for (const auto& d : dirs)
+          printf(" %s", d.c_str());
+        printf("\n");
+      }
+    }
+
     if (!t->link_deps().empty()) {
       printf("    links:");
-      for (const auto* dep : t->link_deps())
-        printf(" %.*s", static_cast<int>(dep->name().size()),
-               dep->name().data());
+      for (const Target& dep : t->link_deps())
+        printf(" %.*s", static_cast<int>(dep.name().size()), dep.name().data());
       printf("\n");
     }
 
-    // Compile edges -- use ranges to derive object paths.
     auto obj_paths =
-        t->sources() | std::views::transform([&](const std::string& src) {
+        t->sources() | std::views::transform([&](std::string_view src) {
           return t->object_path(src);
         });
 
@@ -183,7 +176,6 @@ int Project::build(bool dry_run) {
       ++compile_count;
     }
 
-    // Final link/archive edge.
     switch (t->kind()) {
     case StaticLibrary:
       printf("    archive: -> %s\n", t->output_filename().c_str());
@@ -199,7 +191,6 @@ int Project::build(bool dry_run) {
   printf("  plan: %zu compile, %zu archive, %zu link\n", compile_count,
          archive_count, link_count);
 
-  // Execute via ninja bridge (skip in dry-run mode).
   if (dry_run)
     return 0;
   return NinjaBridge::build(*this);

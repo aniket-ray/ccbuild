@@ -2,6 +2,7 @@
 #define CCBUILD_PROJECT_H
 
 #include <memory>
+#include <optional>
 
 #include "ccbuild/executable.h"
 #include "ccbuild/static_library.h"
@@ -32,7 +33,7 @@ class Project {
  private:
   friend class NinjaBridge;
 
-  [[nodiscard]] bool validate(std::string& err) const;
+  [[nodiscard]] std::optional<std::string> validate() const;
 
   std::string name_;
   int standard_ = 17;
