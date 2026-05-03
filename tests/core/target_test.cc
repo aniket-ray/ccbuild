@@ -55,7 +55,7 @@ TEST(TargetTest, LinkAddsDependency) {
   app.link(lib);
 
   ASSERT_EQ(app.link_deps().size(), 1u);
-  EXPECT_EQ(app.link_deps()[0]->name(), "mylib");
+  EXPECT_EQ(app.link_deps()[0].get().name(), "mylib");
 }
 
 TEST(TargetTest, LinkMultipleDeps) {
@@ -65,8 +65,8 @@ TEST(TargetTest, LinkMultipleDeps) {
   app.link(a).link(b);
 
   ASSERT_EQ(app.link_deps().size(), 2u);
-  EXPECT_EQ(app.link_deps()[0]->name(), "a");
-  EXPECT_EQ(app.link_deps()[1]->name(), "b");
+  EXPECT_EQ(app.link_deps()[0].get().name(), "a");
+  EXPECT_EQ(app.link_deps()[1].get().name(), "b");
 }
 
 /// add_compile_options
@@ -136,6 +136,60 @@ TEST(TargetTest, FluentChaining) {
   EXPECT_EQ(&ref, &t);
   EXPECT_EQ(t.link_deps().size(), 1u);
   EXPECT_EQ(t.compile_options().size(), 1u);
+}
+
+/// include directories
+TEST(TargetTest, IncludeDirsInitiallyEmpty) {
+  Executable t("myapp", { "main.cc" });
+  EXPECT_TRUE(t.include_dirs(Visibility::Private).empty());
+  EXPECT_TRUE(t.include_dirs(Visibility::Public).empty());
+  EXPECT_TRUE(t.include_dirs(Visibility::Interface).empty());
+}
+
+TEST(TargetTest, AddIncludeDirsPrivate) {
+  Executable t("myapp", { "main.cc" });
+  t.add_include_dirs({ "src" }, Visibility::Private);
+  ASSERT_EQ(t.include_dirs(Visibility::Private).size(), 1u);
+  EXPECT_EQ(t.include_dirs(Visibility::Private)[0], "src");
+  EXPECT_TRUE(t.include_dirs(Visibility::Public).empty());
+}
+
+TEST(TargetTest, AddIncludeDirsPublic) {
+  Executable t("myapp", { "main.cc" });
+  t.add_include_dirs({ "include" }, Visibility::Public);
+  ASSERT_EQ(t.include_dirs(Visibility::Public).size(), 1u);
+  EXPECT_EQ(t.include_dirs(Visibility::Public)[0], "include");
+}
+
+TEST(TargetTest, AddIncludeDirsInterface) {
+  Executable t("myapp", { "main.cc" });
+  t.add_include_dirs({ "api" }, Visibility::Interface);
+  ASSERT_EQ(t.include_dirs(Visibility::Interface).size(), 1u);
+  EXPECT_EQ(t.include_dirs(Visibility::Interface)[0], "api");
+}
+
+TEST(TargetTest, AddIncludeDirsAccumulates) {
+  Executable t("myapp", { "main.cc" });
+  t.add_include_dirs({ "a" }, Visibility::Private);
+  t.add_include_dirs({ "b" }, Visibility::Private);
+  EXPECT_EQ(t.include_dirs(Visibility::Private).size(), 2u);
+}
+
+TEST(TargetTest, AddIncludeDirsMultipleVisibilities) {
+  Executable t("myapp", { "main.cc" });
+  t.add_include_dirs({ "priv" }, Visibility::Private);
+  t.add_include_dirs({ "pub" }, Visibility::Public);
+  t.add_include_dirs({ "iface" }, Visibility::Interface);
+  EXPECT_EQ(t.include_dirs(Visibility::Private).size(), 1u);
+  EXPECT_EQ(t.include_dirs(Visibility::Public).size(), 1u);
+  EXPECT_EQ(t.include_dirs(Visibility::Interface).size(), 1u);
+}
+
+/// link exe->exe rejection
+TEST(TargetTest, LinkExeToExeThrows) {
+  Executable a("a", { "a.cc" });
+  Executable b("b", { "b.cc" });
+  EXPECT_THROW(a.link(b), std::invalid_argument);
 }
 
 }  // namespace

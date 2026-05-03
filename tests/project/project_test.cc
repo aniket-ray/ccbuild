@@ -186,7 +186,7 @@ TEST(ProjectTest, BuildOutputContainsProjectName) {
   p.add_executable("app", { "main.cc" });
 
   testing::internal::CaptureStdout();
-  (void)p.build(/*dry_run=*/true);
+  static_cast<void>(p.build(/*dry_run=*/true));
   std::string out = testing::internal::GetCapturedStdout();
 
   EXPECT_NE(out.find("coolproject"), std::string::npos);
@@ -201,7 +201,7 @@ TEST(ProjectTest, BuildOutputContainsTargetInfo) {
   exe.add_compile_options({ "-Wall" });
 
   testing::internal::CaptureStdout();
-  (void)p.build(/*dry_run=*/true);
+  static_cast<void>(p.build(/*dry_run=*/true));
   std::string out = testing::internal::GetCapturedStdout();
 
   EXPECT_NE(out.find("mylib"), std::string::npos);
@@ -221,7 +221,7 @@ TEST(ProjectTest, BuildOutputContainsPlanSummary) {
   p.add_executable("app", { "main.cc" });
 
   testing::internal::CaptureStdout();
-  (void)p.build(/*dry_run=*/true);
+  static_cast<void>(p.build(/*dry_run=*/true));
   std::string out = testing::internal::GetCapturedStdout();
 
   EXPECT_NE(out.find("3 compile"), std::string::npos);
