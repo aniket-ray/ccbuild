@@ -4,10 +4,9 @@
 #include <string>
 
 namespace ccbuild {
-// compiler family
-enum class CompilerKind { GCC, Clang, Unknown };
 
-// compiler info
+enum class CompilerKind { Gcc, Clang, Unknown };
+
 struct CompilerInfo {
   std::string path;
   CompilerKind kind = CompilerKind::Unknown;
@@ -19,6 +18,13 @@ struct CompilerInfo {
 
 [[nodiscard]] std::optional<CompilerInfo> detect_compiler();
 
+namespace internal {
+
+CompilerKind identify_kind(std::string_view version_output);
+std::string extract_version(const std::string& version_output);
+int extract_major(const std::string& version);
+
+}  // namespace internal
 }  // namespace ccbuild
 
 #endif  // CCBUILD_COMPILER_H
