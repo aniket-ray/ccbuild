@@ -19,9 +19,12 @@ namespace fs = std::filesystem;
 #error "CCBUILD_NINJA_INCLUDE_DIR must be defined by CMake"
 #endif
 
-static constexpr const char* kBuildFile = "build.cc";
-static constexpr const char* kRunnerDir = ".ccbuild";
-static constexpr const char* kRunnerBin = ".ccbuild/runner";
+static const std::string build_file = "build.cc";
+static const std::string runner_dir = ".ccbuild";
+static const std::string runner_bin = ".ccbuild/runner";
+
+static constexpr int64_t ns_per_sec = 1'000'000'000;
+static constexpr int signal_exit_base = 128;
 
 // Get the modification time of a file (nanosecond precision).
 // Returns 0 if the file doesn't exist.
@@ -30,10 +33,10 @@ static int64_t file_mtime_ns(const std::string& path) {
   if (stat(path.c_str(), &st) != 0)
     return 0;
 #if defined(__APPLE__)
-  return static_cast<int64_t>(st.st_mtimespec.tv_sec) * 1000000000LL +
+  return static_cast<int64_t>(st.st_mtimespec.tv_sec) * ns_per_sec +
          st.st_mtimespec.tv_nsec;
 #else
-  return static_cast<int64_t>(st.st_mtim.tv_sec) * 1000000000LL +
+  return static_cast<int64_t>(st.st_mtim.tv_sec) * ns_per_sec +
          st.st_mtim.tv_nsec;
 #endif
 }
@@ -52,7 +55,7 @@ static bool runner_is_cached(const std::string& build_cc,
 static int compile_build_cc(const std::string& build_cc,
                             const std::string& runner) {
   // Ensure output directory exists.
-  fs::create_directories(kRunnerDir);
+  fs::create_directories(runner_dir);
 
   // Build the compile command.
   // Link order matters: ccbuildlib first (depends on ninjacore), then
@@ -98,26 +101,26 @@ static int run_runner(const std::string& runner) {
     return WEXITSTATUS(rc);
   if (WIFSIGNALED(rc)) {
     fprintf(stderr, "ccbuild: runner killed by signal %d\n", WTERMSIG(rc));
-    return 128 + WTERMSIG(rc);
+    return signal_exit_base + WTERMSIG(rc);
   }
   return 1;
 }
 
 int main(int argc, char* argv[]) {
   // Check for build.cc in the current directory.
-  if (!fs::exists(kBuildFile)) {
+  if (!fs::exists(build_file)) {
     fprintf(stderr, "ccbuild: error: no %s found in current directory.\n",
-            kBuildFile);
+            build_file.c_str());
     return 1;
   }
 
   // Compile build.cc if needed (cache check).
-  if (!runner_is_cached(kBuildFile, kRunnerBin)) {
-    int rc = compile_build_cc(kBuildFile, kRunnerBin);
+  if (!runner_is_cached(build_file, runner_bin)) {
+    int rc = compile_build_cc(build_file, runner_bin);
     if (rc != 0)
       return rc;
   }
 
   // Run the compiled build script.
-  return run_runner(kRunnerBin);
+  return run_runner(runner_bin);
 }
