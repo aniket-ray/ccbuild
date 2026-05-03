@@ -6,9 +6,11 @@
 // Ninja headers.
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_set>
 
 #include "build.h"
 #include "build_log.h"
@@ -122,6 +124,42 @@ Node* add_target_edges(State& state, const Target& target) {
 
   // Build per-target cflags string.
   std::string cflags;
+
+  // Include directories with visibility propagation.
+  {
+    std::unordered_set<std::string_view> seen;
+    auto add_dir = [&](std::string_view dir) {
+      if (seen.insert(dir).second) {
+        if (!cflags.empty())
+          cflags += ' ';
+        cflags += "-I";
+        cflags += dir;
+      }
+    };
+    auto add_dirs = [&](std::span<const std::string> dirs) {
+      for (const auto& d : dirs)
+        add_dir(d);
+    };
+
+    // Own: PRIVATE + PUBLIC
+    add_dirs(target.include_dirs(Visibility::Private));
+    add_dirs(target.include_dirs(Visibility::Public));
+
+    // Transitive from link deps: PUBLIC + INTERFACE
+    std::unordered_set<std::string_view> visited;
+    std::function<void(const Target&)> collect = [&](const Target& t) {
+      if (!visited.insert(t.name()).second)
+        return;
+      add_dirs(t.include_dirs(Visibility::Public));
+      add_dirs(t.include_dirs(Visibility::Interface));
+      for (const Target& dep : t.link_deps())
+        collect(dep);
+    };
+    for (const Target& dep : target.link_deps())
+      collect(dep);
+  }
+
+  // Compile options.
   for (const auto& opt : target.compile_options()) {
     if (!cflags.empty())
       cflags += ' ';
@@ -141,9 +179,9 @@ Node* add_target_edges(State& state, const Target& target) {
     Edge* edge = state.AddEdge(cc_rule);
 
     // Set per-edge cflags binding.
-    auto* env = new BindingEnv(&state.bindings_);
+    auto env = std::make_unique<BindingEnv>(&state.bindings_);
     env->AddBinding("cflags", cflags);
-    edge->env_ = env;
+    edge->env_ = env.release();
 
     state.AddIn(edge, src, 0);
     std::string err;
@@ -164,7 +202,8 @@ Node* add_target_edges(State& state, const Target& target) {
       (target.kind() == TargetKind::Executable) ? link_rule : ar_rule;
 
   Edge* final_edge = state.AddEdge(final_rule);
-  final_edge->env_ = new BindingEnv(&state.bindings_);
+  auto final_env = std::make_unique<BindingEnv>(&state.bindings_);
+  final_edge->env_ = final_env.release();
 
   // Add all object files as inputs.
   for (auto* obj_node : obj_nodes) {
@@ -172,8 +211,8 @@ Node* add_target_edges(State& state, const Target& target) {
   }
 
   // Add link dependency outputs as inputs (for executables linking libraries).
-  for (const auto* dep : target.link_deps()) {
-    std::string dep_output = dep->output_filename();
+  for (const Target& dep : target.link_deps()) {
+    std::string dep_output = dep.output_filename();
     state.AddIn(final_edge, dep_output, 0);
   }
 
@@ -220,8 +259,9 @@ int NinjaBridge::build(const Project& project) {
   BuildConfig config;
   config.verbosity = BuildConfig::NORMAL;
   config.parallelism = std::thread::hardware_concurrency();
+  static constexpr int kDefaultParallelism = 4;
   if (config.parallelism == 0)
-    config.parallelism = 4;
+    config.parallelism = kDefaultParallelism;
 
   // Set up build infrastructure
   BuildLog build_log;
