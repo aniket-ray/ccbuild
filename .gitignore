@@ -1,5 +1,7 @@
 # Build output
-build/
+build*/
+cmake-build-*/
+lib
 
 # IDE
 .idea/
@@ -11,7 +13,9 @@ build/
 .DS_Store
 .cache/
 
+# Coverage
 *.profraw
+*.profdata
 
 # ccbuild self dir
 **/.ccbuild/
