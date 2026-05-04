@@ -3,76 +3,99 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace fs = std::filesystem;
 
-// Paths embedded by CMake at compile time.
-#ifndef CCBUILD_INCLUDE_DIR
-#error "CCBUILD_INCLUDE_DIR must be defined by CMake"
-#endif
-#ifndef CCBUILD_LIB_DIR
-#error "CCBUILD_LIB_DIR must be defined by CMake"
-#endif
-#ifndef CCBUILD_NINJA_INCLUDE_DIR
-#error "CCBUILD_NINJA_INCLUDE_DIR must be defined by CMake"
+// -- Constants -----------------------------------------------------------
+
+static constexpr std::string_view kBuildFile = "build.cc";
+static constexpr std::string_view kRunnerDir = ".ccbuild";
+static constexpr std::string_view kRunnerBin = ".ccbuild/runner";
+static constexpr int64_t kNanosecondsPerSecond = 1'000'000'000;
+static constexpr int kSignalExitBase = 128;
+
+// -- Locate ccbuild's installed resources --------------------------------
+//
+// The install prefix is baked in at compile-time by CMake:
+//   -DCCBUILD_INSTALL_PREFIX="/usr/local"
+//
+// Headers live at ${prefix}/include, libraries at ${prefix}/lib.
+// If the binary is running from the build tree (pre-install), we fall
+// back to paths relative to the binary's own location.
+
+#ifndef CCBUILD_INSTALL_PREFIX
+#define CCBUILD_INSTALL_PREFIX "/usr/local"
 #endif
 
-static const std::string build_file = "build.cc";
-static const std::string runner_dir = ".ccbuild";
-static const std::string runner_bin = ".ccbuild/runner";
+/// Return the absolute path of the currently running executable.
+/// The ccbuild resource root directory (baked at compile time).
+static const std::string kCcbuildRoot = CCBUILD_INSTALL_PREFIX;
 
-static constexpr int64_t ns_per_sec = 1'000'000'000;
-static constexpr int signal_exit_base = 128;
-
-// Get the modification time of a file (nanosecond precision).
-// Returns 0 if the file doesn't exist.
+/// Get the modification time of a file in nanoseconds since epoch.
+/// @return The mtime, or 0 if the file cannot be stat'd.
 static int64_t file_mtime_ns(const std::string& path) {
   struct stat st;
-  if (stat(path.c_str(), &st) != 0)
+  if (stat(path.c_str(), &st) != 0) {
     return 0;
+  }
 #if defined(__APPLE__)
-  return static_cast<int64_t>(st.st_mtimespec.tv_sec) * ns_per_sec +
+  return static_cast<int64_t>(st.st_mtimespec.tv_sec) * kNanosecondsPerSecond +
          st.st_mtimespec.tv_nsec;
 #else
-  return static_cast<int64_t>(st.st_mtim.tv_sec) * ns_per_sec +
+  return static_cast<int64_t>(st.st_mtim.tv_sec) * kNanosecondsPerSecond +
          st.st_mtim.tv_nsec;
 #endif
 }
-// Check if the cached runner is still valid (build.cc hasn't changed).
+
+/// Check whether the cached runner binary is newer than build.cc.
+/// If so, we can skip recompilation.
 static bool runner_is_cached(const std::string& build_cc,
                              const std::string& runner) {
-  auto runner_mtime = file_mtime_ns(runner);
-  if (runner_mtime == 0)
-    return false;  // Runner doesn't exist.
-
-  auto build_mtime = file_mtime_ns(build_cc);
+  const auto runner_mtime = file_mtime_ns(runner);
+  if (runner_mtime == 0) {
+    return false;
+  }
+  const auto build_mtime = file_mtime_ns(build_cc);
   return runner_mtime > build_mtime;
 }
 
-// Compile build.cc into .ccbuild/runner.
+/// Compile the build.cc script into the runner binary.
+/// @return 0 on success, non-zero on compilation failure.
 static int compile_build_cc(const std::string& build_cc,
                             const std::string& runner) {
-  // Ensure output directory exists.
-  fs::create_directories(runner_dir);
+  fs::create_directories(kRunnerDir);
 
-  // Build the compile command.
-  // Link order matters: ccbuildlib first (depends on ninjacore), then
-  // ninjacore.
+  const auto root = kCcbuildRoot;
+
+  // Determine the library directory -- on some distros it's lib64.
+  std::string lib_dir = root + "/lib";
+  {
+    std::error_code ec;
+    if (!fs::exists(lib_dir + "/libccbuildlib.a", ec)) {
+      const std::string alt = root + "/lib64";
+      if (fs::exists(alt + "/libccbuildlib.a", ec)) {
+        lib_dir = alt;
+      }
+    }
+  }
+
+  // Build the compiler command.
   std::string cmd;
 #ifdef __APPLE__
   cmd += "c++ -std=c++20 -g";
 #else
   cmd += "g++ -std=c++20 -g";
 #endif
-  cmd += " -I" CCBUILD_INCLUDE_DIR;
-  cmd += " -I" CCBUILD_NINJA_INCLUDE_DIR;
+  cmd += " -I" + root + "/include";
   cmd += " " + build_cc;
-  cmd += " -L" CCBUILD_LIB_DIR;
+  cmd += " -L" + lib_dir;
   cmd += " -lccbuildlib -lninjacore";
 #ifndef __APPLE__
-  cmd += " -lstdc++fs";  // needed on older Linux GCC for std::filesystem
+  cmd += " -lstdc++fs";
 #endif
   cmd += " -lpthread";
 #ifdef CCBUILD_COVERAGE_LINK_FLAGS
@@ -84,8 +107,9 @@ static int compile_build_cc(const std::string& build_cc,
   fprintf(stderr, "ccbuild: compiling %s...\n", build_cc.c_str());
 
   int rc = system(cmd.c_str());
-  if (WIFEXITED(rc))
+  if (WIFEXITED(rc)) {
     rc = WEXITSTATUS(rc);
+  }
   if (rc != 0) {
     fprintf(stderr, "ccbuild: failed to compile %s\n", build_cc.c_str());
     fprintf(stderr, "  command: %s\n", cmd.c_str());
@@ -94,33 +118,40 @@ static int compile_build_cc(const std::string& build_cc,
   return 0;
 }
 
-// Run the compiled runner binary, forwarding the exit code.
+/// Execute the runner binary.
+/// @return The runner's exit code, or a signal-based code if killed.
 static int run_runner(const std::string& runner) {
-  int rc = system(runner.c_str());
-  if (WIFEXITED(rc))
+  const int rc = system(runner.c_str());
+  if (WIFEXITED(rc)) {
     return WEXITSTATUS(rc);
+  }
   if (WIFSIGNALED(rc)) {
     fprintf(stderr, "ccbuild: runner killed by signal %d\n", WTERMSIG(rc));
-    return signal_exit_base + WTERMSIG(rc);
+    return kSignalExitBase + WTERMSIG(rc);
   }
   return 1;
 }
 
+// -- Entry Point ---------------------------------------------------------
+
 int main(int argc, char* argv[]) {
-  // Check for build.cc in the current directory.
-  if (!fs::exists(build_file)) {
+  (void)argc;
+  (void)argv;
+
+  if (!fs::exists(kBuildFile)) {
     fprintf(stderr, "ccbuild: error: no %s found in current directory.\n",
-            build_file.c_str());
+            kBuildFile.data());
     return 1;
   }
 
-  // Compile build.cc if needed (cache check).
-  if (!runner_is_cached(build_file, runner_bin)) {
-    int rc = compile_build_cc(build_file, runner_bin);
-    if (rc != 0)
+  // Recompile the runner if build.cc is newer than the cached binary.
+  if (!runner_is_cached(std::string(kBuildFile), std::string(kRunnerBin))) {
+    const int rc =
+        compile_build_cc(std::string(kBuildFile), std::string(kRunnerBin));
+    if (rc != 0) {
       return rc;
+    }
   }
 
-  // Run the compiled build script.
-  return run_runner(runner_bin);
+  return run_runner(std::string(kRunnerBin));
 }

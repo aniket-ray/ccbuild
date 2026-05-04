@@ -40,7 +40,6 @@ add_library(ninjacore STATIC
         ninja/src/edit_distance.cc
         ninja/src/elide_middle.cc
         ninja/src/eval_env.cc
-        ninja/src/explanations.cc
         ninja/src/graph.cc
         ninja/src/graphviz.cc
         ninja/src/jobserver.cc
@@ -101,11 +100,9 @@ endif ()
 # ccbuild cli
 add_executable(ccbuild src/main.cc)
 target_link_libraries(ccbuild PRIVATE ccbuildlib)
-
 target_compile_definitions(ccbuild PRIVATE
-        CCBUILD_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/include"
-        CCBUILD_LIB_DIR="${CMAKE_BINARY_DIR}"
-        CCBUILD_NINJA_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/ninja/src"
+    CCBUILD_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}"
+    CCBUILD_BINARY_DIR="${CMAKE_BINARY_DIR}"
 )
 
 # When libraries are coverage-instrumented, the runner must also link with
@@ -120,7 +117,14 @@ if (CCBUILD_COVERAGE)
     endif ()
 endif ()
 
-# tests
+# -- install rules ------------------------------------------------------
+include(GNUInstallDirs)
+
+install(TARGETS ccbuild RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS ccbuildlib ninjacore ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(DIRECTORY include/ccbuild DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+# -- tests -------------------------------------------------------------
 include(CTest)
 if (BUILD_TESTING)
     include(FetchContent)
