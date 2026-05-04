@@ -5,17 +5,25 @@
 #include <map>
 #include <ranges>
 #include <set>
+#include <string>
+#include <string_view>
 
 #include "internal/ninja_bridge.h"
 #include "internal/validators.h"
 
 namespace ccbuild {
 
+// -- Construction --------------------------------------------------------
+
 Project::Project(std::string_view name) : name_(name) {}
 
-void Project::set_cxx_standard(int std) {
-  standard_ = std;
+// -- Configuration -------------------------------------------------------
+
+void Project::set_cxx_standard(int cxx_standard) {
+  standard_ = cxx_standard;
 }
+
+// -- Target Registration -------------------------------------------------
 
 Executable& Project::add_executable(
     std::string_view name, std::initializer_list<std::string> sources) {
@@ -35,7 +43,10 @@ StaticLibrary& Project::add_library(
   return *ptr;
 }
 
+// -- Validation ----------------------------------------------------------
+
 std::optional<std::string> Project::validate() const {
+  // Check for duplicate target names.
   std::set<std::string_view> names;
   for (const auto& t : targets_) {
     if (!names.insert(t->name()).second) {
@@ -44,6 +55,7 @@ std::optional<std::string> Project::validate() const {
     }
   }
 
+  // Every target must have at least one source file.
   for (const auto& t : targets_) {
     if (t->sources().empty()) {
       return std::string("target '") + std::string(t->name()) +
@@ -51,6 +63,7 @@ std::optional<std::string> Project::validate() const {
     }
   }
 
+  // All source files must have recognised C++ extensions.
   for (const auto& t : targets_) {
     for (const auto& src : t->sources()) {
       if (!validators::is_cpp_source(src)) {
@@ -61,6 +74,7 @@ std::optional<std::string> Project::validate() const {
     }
   }
 
+  // Executables must not link against other executables.
   for (const auto& t : targets_) {
     for (const Target& dep : t->link_deps()) {
       if (dep.kind() == TargetKind::Executable) {
@@ -71,6 +85,7 @@ std::optional<std::string> Project::validate() const {
     }
   }
 
+  // Detect link cycles using depth-first search with three-colour marking.
   enum class Mark { none, in_stack, done };
   std::map<std::string_view, Mark, std::less<>> marks;
 
@@ -82,31 +97,39 @@ std::optional<std::string> Project::validate() const {
         return std::string("link cycle involving '") + std::string(t.name()) +
                "' and '" + std::string(dep.name()) + "'";
       }
-      if (marks[dep.name()] == Mark::none)
-        if (auto err = visit(dep))
+      if (marks[dep.name()] == Mark::none) {
+        if (auto err = visit(dep)) {
           return err;
+        }
+      }
     }
     marks[t.name()] = Mark::done;
     return std::nullopt;
   };
 
   for (const auto& t : targets_) {
-    if (marks[t->name()] == Mark::none)
-      if (auto err = visit(*t))
+    if (marks[t->name()] == Mark::none) {
+      if (auto err = visit(*t)) {
         return err;
+      }
+    }
   }
 
   return std::nullopt;
 }
 
+// -- Build Execution -----------------------------------------------------
+
 int Project::build(bool dry_run) {
   using enum TargetKind;
 
+  // Validate before doing any work.
   if (auto err = validate()) {
     fprintf(stderr, "ccbuild: error: %s\n", err->c_str());
     return 1;
   }
 
+  // -- Print build plan --------------------------------------------------
   printf("ccbuild: project '%s' (C++%d)\n", name_.c_str(), standard_);
 
   size_t compile_count = 0;
@@ -114,6 +137,7 @@ int Project::build(bool dry_run) {
   size_t link_count = 0;
 
   for (const auto& t : targets_) {
+    // Human-readable target kind.
     const char* kind_str = [&] {
       switch (t->kind()) {
       case Executable:
@@ -127,19 +151,29 @@ int Project::build(bool dry_run) {
     printf("  target '%.*s' [%s] -> %s\n", static_cast<int>(t->name().size()),
            t->name().data(), kind_str, t->output_filename().c_str());
 
+    // Sources.
     printf("    sources:");
-    for (const auto& src : t->sources())
+    for (const auto& src : t->sources()) {
       printf(" %s", src.c_str());
+    }
     printf("\n");
 
+    // Compile options.
     if (!t->compile_options().empty()) {
       printf("    options:");
-      for (const auto& opt : t->compile_options())
+      for (const auto& opt : t->compile_options()) {
         printf(" %s", opt.c_str());
+      }
       printf("\n");
     }
 
+    // Include directories grouped by visibility.
     static constexpr int kVisibilityCount = 3;
+    static constexpr const char* kIncludeLabels[] = {
+      nullptr,               // [0] unused (visibility values start at 1)
+      "includes (PUBLIC):",  // Visibility::Public  == 0 → wait...
+    };
+    // Visibility values: Public=0, Private=1, Interface=2
     const char* include_labels[] = { nullptr, nullptr, nullptr };
     include_labels[static_cast<int>(Visibility::Public)] = "includes (PUBLIC):";
     include_labels[static_cast<int>(Visibility::Private)] =
@@ -150,19 +184,32 @@ int Project::build(bool dry_run) {
       auto dirs = t->include_dirs(static_cast<Visibility>(v));
       if (!dirs.empty()) {
         printf("    %s", include_labels[v]);
-        for (const auto& d : dirs)
+        for (const auto& d : dirs) {
           printf(" %s", d.c_str());
+        }
         printf("\n");
       }
     }
 
+    // Link dependencies.
     if (!t->link_deps().empty()) {
       printf("    links:");
-      for (const Target& dep : t->link_deps())
+      for (const Target& dep : t->link_deps()) {
         printf(" %.*s", static_cast<int>(dep.name().size()), dep.name().data());
+      }
       printf("\n");
     }
 
+    // Link options.
+    if (!t->link_options().empty()) {
+      printf("    link opts:");
+      for (const auto& opt : t->link_options()) {
+        printf(" %s", opt.c_str());
+      }
+      printf("\n");
+    }
+
+    // Per-source compile plan.
     auto obj_paths =
         t->sources() | std::views::transform([&](std::string_view src) {
           return t->object_path(src);
@@ -176,6 +223,7 @@ int Project::build(bool dry_run) {
       ++compile_count;
     }
 
+    // Final artifact step.
     switch (t->kind()) {
     case StaticLibrary:
       printf("    archive: -> %s\n", t->output_filename().c_str());
@@ -191,8 +239,11 @@ int Project::build(bool dry_run) {
   printf("  plan: %zu compile, %zu archive, %zu link\n", compile_count,
          archive_count, link_count);
 
-  if (dry_run)
+  if (dry_run) {
     return 0;
+  }
+
+  // Delegate to Ninja for the actual build.
   return NinjaBridge::build(*this);
 }
 

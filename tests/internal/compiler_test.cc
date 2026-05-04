@@ -6,6 +6,8 @@ namespace ccbuild {
 namespace internal {
 namespace {
 
+// -- identify_kind -------------------------------------------------------
+
 TEST(IdentifyKindTest, DetectsClang) {
   EXPECT_EQ(identify_kind("clang version 15.0.0"), CompilerKind::Clang);
   EXPECT_EQ(identify_kind("Apple clang version 14.0.3 (clang-1403.0.22.14.1)"),
@@ -37,6 +39,8 @@ TEST(IdentifyKindTest, ClangBeatsGcc) {
   EXPECT_EQ(identify_kind("clang with gcc compatibility"), CompilerKind::Clang);
 }
 
+// -- extract_version -----------------------------------------------------
+
 TEST(ExtractVersionTest, ExtractsStandardVersion) {
   EXPECT_EQ(extract_version("g++ (GCC) 11.5.0"), "11.5.0");
   EXPECT_EQ(extract_version("clang version 15.0.0 (git-hash)"), "15.0.0");
@@ -53,6 +57,8 @@ TEST(ExtractVersionTest, EmptyInputReturnsEmpty) {
 TEST(ExtractVersionTest, FirstMatchWins) {
   EXPECT_EQ(extract_version("version 1.2.3 and 4.5.6"), "1.2.3");
 }
+
+// -- extract_major -------------------------------------------------------
 
 TEST(ExtractMajorTest, ExtractsNormalVersion) {
   EXPECT_EQ(extract_major("11.5.0"), 11);

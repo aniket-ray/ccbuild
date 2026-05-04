@@ -8,7 +8,9 @@
 
 namespace ccbuild {
 namespace {
-/// Construction
+
+// -- Construction --------------------------------------------------------
+
 TEST(TargetTest, NameIsPreserved) {
   Executable t("myapp", { "main.cc" });
   EXPECT_EQ(t.name(), "myapp");
@@ -27,7 +29,8 @@ TEST(TargetTest, EmptySourcesAllowed) {
   EXPECT_TRUE(t.sources().empty());
 }
 
-/// add_sources
+// -- add_sources ---------------------------------------------------------
+
 TEST(TargetTest, AddSourcesFromInitializerList) {
   Executable t("myapp", { "a.cc" });
   t.add_sources({ "b.cc", "c.cc" });
@@ -43,7 +46,8 @@ TEST(TargetTest, AddSourcesFromVector) {
   EXPECT_EQ(t.sources()[0], "a.cc");
 }
 
-/// link
+// -- link ----------------------------------------------------------------
+
 TEST(TargetTest, LinkDepsInitiallyEmpty) {
   Executable t("myapp", { "main.cc" });
   EXPECT_TRUE(t.link_deps().empty());
@@ -69,7 +73,8 @@ TEST(TargetTest, LinkMultipleDeps) {
   EXPECT_EQ(app.link_deps()[1].get().name(), "b");
 }
 
-/// add_compile_options
+// -- add_compile_options -------------------------------------------------
+
 TEST(TargetTest, CompileOptionsInitiallyEmpty) {
   Executable app("myapp", { "main.cc" });
   EXPECT_TRUE(app.compile_options().empty());
@@ -90,7 +95,8 @@ TEST(TargetTest, AddCompileOptionsAccumulates) {
   EXPECT_EQ(app.compile_options().size(), 3u);
 }
 
-/// object_path
+// -- object_path ---------------------------------------------------------
+
 TEST(TargetTest, ObjectPathSimpleFilename) {
   Executable app("myapp", { "main.cc" });
   EXPECT_EQ(app.object_path("main.cc"), ".ccbuild/obj/myapp/main.o");
@@ -126,19 +132,20 @@ TEST(TargetTest, ObjectPathCollisionDifferentDirs) {
   EXPECT_EQ(iodir, ".ccbuild/obj/myapp/src/io/socket.o");
 }
 
-/// fluent API chaining
+// -- Fluent API chaining -------------------------------------------------
+
 TEST(TargetTest, FluentChaining) {
   StaticLibrary dep("dep", { "dep.cc" });
   Executable t("myapp", { "main.cc" });
 
-  // All methods return Target& for chaining
   auto& ref = t.link(dep).add_compile_options({ "-Wall" });
   EXPECT_EQ(&ref, &t);
   EXPECT_EQ(t.link_deps().size(), 1u);
   EXPECT_EQ(t.compile_options().size(), 1u);
 }
 
-/// include directories
+// -- Include directories -------------------------------------------------
+
 TEST(TargetTest, IncludeDirsInitiallyEmpty) {
   Executable t("myapp", { "main.cc" });
   EXPECT_TRUE(t.include_dirs(Visibility::Private).empty());
@@ -185,7 +192,8 @@ TEST(TargetTest, AddIncludeDirsMultipleVisibilities) {
   EXPECT_EQ(t.include_dirs(Visibility::Interface).size(), 1u);
 }
 
-/// link exe->exe rejection
+// -- Link validation -----------------------------------------------------
+
 TEST(TargetTest, LinkExeToExeThrows) {
   Executable a("a", { "a.cc" });
   Executable b("b", { "b.cc" });
