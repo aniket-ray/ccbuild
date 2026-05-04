@@ -1,4 +1,4 @@
-/// loganalyzer — build.cc
+/// loganalyzer -- build.cc
 ///
 /// This project exercises ccbuild with:
 ///   - 3 static libraries (csv, stats, analyzer)
@@ -26,7 +26,7 @@ int main() {
       "stats", { "src/stats/summary.cc", "src/stats/counter.cc" });
   stats.add_compile_options({ "-Isrc" });
 
-  // Log analyzer library — depends on csv for parsing log files.
+  // Log analyzer library -- depends on csv for parsing log files.
   auto& analyzer = p.add_library(
       "analyzer", { "src/analyzer/log_entry.cc", "src/analyzer/filter.cc" });
   analyzer.add_compile_options({ "-Isrc" });

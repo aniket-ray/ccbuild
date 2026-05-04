@@ -8,7 +8,7 @@
 
 namespace stats {
 
-/// Frequency counter — counts occurrences of string keys.
+/// Frequency counter -- counts occurrences of string keys.
 class Counter {
  public:
   void add(const std::string& key);

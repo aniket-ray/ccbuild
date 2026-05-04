@@ -1,4 +1,4 @@
-/// logsummary — Compute statistics over a CSV log file.
+/// logsummary -- Compute statistics over a CSV log file.
 ///
 /// Usage: logsummary <file.csv>
 

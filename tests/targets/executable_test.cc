@@ -4,10 +4,15 @@
 
 namespace ccbuild {
 namespace {
+
+// -- Target Kind ---------------------------------------------------------
+
 TEST(ExecutableTest, KindIsExecutable) {
   Executable exe("myexe", { "main.cc" });
   EXPECT_EQ(exe.kind(), TargetKind::Executable);
 }
+
+// -- Output Filename -----------------------------------------------------
 
 TEST(ExecutableTest, OutputFilenameMatchesName) {
   Executable exe("myexe", { "main.cc" });
