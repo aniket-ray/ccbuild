@@ -1,6 +1,7 @@
 #include "ccbuild/executable.h"
 
 namespace ccbuild {
+
 Executable::Executable(std::string_view name, std::vector<std::string> sources)
     : Target(name, std::move(sources)) {}
 

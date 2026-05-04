@@ -1,4 +1,4 @@
-/// logview — View and filter log entries from a CSV log file.
+/// logview -- View and filter log entries from a CSV log file.
 ///
 /// Usage: logview <file.csv> [--level WARN] [--source auth] [--grep timeout]
 

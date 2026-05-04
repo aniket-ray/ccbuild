@@ -1,6 +1,7 @@
 #include "ccbuild/static_library.h"
 
 namespace ccbuild {
+
 StaticLibrary::StaticLibrary(std::string_view name,
                              std::vector<std::string> sources)
     : Target(name, std::move(sources)) {}
