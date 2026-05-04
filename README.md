@@ -22,7 +22,7 @@ The `ccbuild` CLI compiles your build script, caches the result, and executes it
 
 ## Quick Start
 
-### 1. Installation
+### 1. Bootstrap via CMake
 
 Ensure you have a C++20 compiler, CMake 3.15+, and a POSIX system (macOS/Linux).
 
@@ -30,11 +30,19 @@ Ensure you have a C++20 compiler, CMake 3.15+, and a POSIX system (macOS/Linux).
 git clone --recursive https://github.com/aniket-ray/ccbuild.git
 cd ccbuild
 
+# Bootstrap: build with CMake, then install to /usr/local (or your prefix)
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
-
-sudo cp build/ccbuild /usr/local/bin/
+sudo cmake --install build
 ```
+
+The install step places the binary (`ccbuild`), libraries (`libccbuildlib.a`, `libninjacore.a`), and headers (`ccbuild/*.h`) under the install prefix. The install path is baked into the binary at compile time — no directory crawling needed at runtime.
+
+> **Self-hosting:** After the initial CMake bootstrap, ccbuild can rebuild itself:
+> ```bash
+> cd ccbuild
+> ccbuild            # uses build.cc to rebuild itself
+> ```
 
 ### 2. Write your `build.cc`
 
