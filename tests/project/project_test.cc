@@ -9,10 +9,14 @@
 namespace ccbuild {
 namespace {
 
+// -- Default Settings ----------------------------------------------------
+
 TEST(ProjectTest, DefaultStandardIs17) {
   Project p("myproject");
   EXPECT_EQ(p.standard(), 17);
 }
+
+// -- Adding Targets ------------------------------------------------------
 
 TEST(ProjectTest, AddExecutableReturnsReference) {
   Project p("test");
@@ -35,6 +39,8 @@ TEST(ProjectTest, AddLibraryReturnsReference) {
   EXPECT_EQ(lib.kind(), TargetKind::StaticLibrary);
 }
 
+// -- Basic Build ---------------------------------------------------------
+
 TEST(ProjectTest, BuildSucceedsOnValidProject) {
   Project p("test");
   p.add_executable("myapp", { "main.cc" });
@@ -48,6 +54,8 @@ TEST(ProjectTest, BuildSucceedsWithLinkDeps) {
   exe.link(lib);
   EXPECT_EQ(p.build(/*dry_run=*/true), 0);
 }
+
+// -- Validation: Duplicate Names -----------------------------------------
 
 TEST(ProjectTest, BuildFailsOnDuplicateTargetNames) {
   Project p("test");
@@ -76,6 +84,8 @@ TEST(ProjectTest, BuildFailsOnDuplicateExeAndLibName) {
   EXPECT_NE(err.find("duplicate target name"), std::string::npos);
 }
 
+// -- Validation: Empty Sources -------------------------------------------
+
 TEST(ProjectTest, BuildFailsOnEmptySources) {
   Project p("test");
   p.add_executable("myapp", {});
@@ -89,6 +99,8 @@ TEST(ProjectTest, BuildFailsOnEmptySources) {
   EXPECT_NE(err.find("myapp"), std::string::npos);
 }
 
+// -- Validation: Invalid Extensions --------------------------------------
+
 TEST(ProjectTest, BuildFailsOnInvalidSourceExtension) {
   Project p("test");
   p.add_executable("myapp", { "Makefile" });
@@ -101,6 +113,8 @@ TEST(ProjectTest, BuildFailsOnInvalidSourceExtension) {
   EXPECT_NE(err.find("invalid source file"), std::string::npos);
   EXPECT_NE(err.find("Makefile"), std::string::npos);
 }
+
+// -- Validation: Executable Link Rules -----------------------------------
 
 TEST(ProjectTest, LinkingExeToExeThrows) {
   Executable a("a", { "a.cc" });
@@ -116,6 +130,8 @@ TEST(ProjectTest, BuildSucceedsExeLinkingLib) {
   exe.link(lib);
   EXPECT_EQ(p.build(/*dry_run=*/true), 0);
 }
+
+// -- Validation: Link Cycles ---------------------------------------------
 
 TEST(ProjectTest, BuildFailsOnDirectLinkCycle) {
   Project p("test");
@@ -179,6 +195,8 @@ TEST(ProjectTest, BuildSucceedsOnDiamondDag) {
   EXPECT_EQ(p.build(/*dry_run=*/true), 0);
   testing::internal::GetCapturedStdout();
 }
+
+// -- Build Output --------------------------------------------------------
 
 TEST(ProjectTest, BuildOutputContainsProjectName) {
   Project p("coolproject");

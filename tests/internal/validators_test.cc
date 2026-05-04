@@ -7,12 +7,16 @@
 namespace ccbuild {
 namespace {
 
+// -- CompilerInfo::kind_str ----------------------------------------------
+
 TEST(CompilerInfoTest, KindStrMapping) {
   EXPECT_EQ((CompilerInfo{ .kind = CompilerKind::Gcc }).kind_str(), "GCC");
   EXPECT_EQ((CompilerInfo{ .kind = CompilerKind::Clang }).kind_str(), "Clang");
   EXPECT_EQ((CompilerInfo{ .kind = CompilerKind::Unknown }).kind_str(),
             "Unknown");
 }
+
+// -- detect_compiler -----------------------------------------------------
 
 TEST(DetectCompilerTest, FindsDefaultCompiler) {
   unsetenv("CXX");
@@ -51,9 +55,11 @@ TEST(DetectCompilerTest, VersionHasThreeComponents) {
   auto info = detect_compiler();
   ASSERT_TRUE(info.has_value());
   int dots = 0;
-  for (char c : info->version)
-    if (c == '.')
-      dots++;
+  for (char c : info->version) {
+    if (c == '.') {
+      ++dots;
+    }
+  }
   EXPECT_EQ(dots, 2);
 }
 
@@ -66,6 +72,8 @@ TEST(DetectCompilerTest, MajorVersionMatchesVersionString) {
   int expected_major = std::stoi(info->version.substr(0, dot_pos));
   EXPECT_EQ(info->major_version, expected_major);
 }
+
+// -- is_cpp_source -------------------------------------------------------
 
 TEST(IsCppSourceTest, RejectsNoExtension) {
   EXPECT_FALSE(validators::is_cpp_source("Makefile"));
