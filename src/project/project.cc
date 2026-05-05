@@ -1,10 +1,7 @@
 #include "ccbuild/project.h"
 
 #include <cstdio>
-#include <functional>
-#include <map>
 #include <ranges>
-#include <set>
 #include <string>
 #include <string_view>
 
@@ -46,75 +43,16 @@ StaticLibrary& Project::add_library(
 // -- Validation ----------------------------------------------------------
 
 std::optional<std::string> Project::validate() const {
-  // Check for duplicate target names.
-  std::set<std::string_view> names;
-  for (const auto& t : targets_) {
-    if (!names.insert(t->name()).second) {
-      return std::string("duplicate target name: '") + std::string(t->name()) +
-             "'";
-    }
-  }
-
-  // Every target must have at least one source file.
-  for (const auto& t : targets_) {
-    if (t->sources().empty()) {
-      return std::string("target '") + std::string(t->name()) +
-             "' has no sources";
-    }
-  }
-
-  // All source files must have recognised C++ extensions.
-  for (const auto& t : targets_) {
-    for (const auto& src : t->sources()) {
-      if (!validators::is_cpp_source(src)) {
-        return std::string("target '") + std::string(t->name()) +
-               "' has invalid source file: '" + src +
-               "' (expected .cc, .cpp, .cxx, .c++, .c, or .C)";
-      }
-    }
-  }
-
-  // Executables must not link against other executables.
-  for (const auto& t : targets_) {
-    for (const Target& dep : t->link_deps()) {
-      if (dep.kind() == TargetKind::Executable) {
-        return std::string("target '") + std::string(t->name()) +
-               "' links against executable '" + std::string(dep.name()) +
-               "' (can only link against libraries)";
-      }
-    }
-  }
-
-  // Detect link cycles using depth-first search with three-colour marking.
-  enum class Mark { none, in_stack, done };
-  std::map<std::string_view, Mark, std::less<>> marks;
-
-  std::function<std::optional<std::string>(const Target&)> visit =
-      [&](const Target& t) -> std::optional<std::string> {
-    marks[t.name()] = Mark::in_stack;
-    for (const Target& dep : t.link_deps()) {
-      if (marks[dep.name()] == Mark::in_stack) {
-        return std::string("link cycle involving '") + std::string(t.name()) +
-               "' and '" + std::string(dep.name()) + "'";
-      }
-      if (marks[dep.name()] == Mark::none) {
-        if (auto err = visit(dep)) {
-          return err;
-        }
-      }
-    }
-    marks[t.name()] = Mark::done;
-    return std::nullopt;
-  };
-
-  for (const auto& t : targets_) {
-    if (marks[t->name()] == Mark::none) {
-      if (auto err = visit(*t)) {
-        return err;
-      }
-    }
-  }
-
+  if (auto err = validators::check_duplicate_target_names(targets_))
+    return err;
+  if (auto err = validators::check_targets_have_sources(targets_))
+    return err;
+  if (auto err = validators::check_source_extensions(targets_))
+    return err;
+  if (auto err = validators::check_no_exe_links_exe(targets_))
+    return err;
+  if (auto err = validators::check_no_link_cycles(targets_))
+    return err;
   return std::nullopt;
 }
 
