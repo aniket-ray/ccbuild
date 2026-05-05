@@ -2,12 +2,22 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 #include "ccbuild/executable.h"
 
 namespace ccbuild {
 namespace {
+
+struct TempFile {
+  std::string path;
+  explicit TempFile(std::string p) : path(std::move(p)) {}
+  ~TempFile() { std::filesystem::remove(path); }
+  TempFile(const TempFile&) = delete;
+  TempFile& operator=(const TempFile&) = delete;
+};
 
 // -- Default Settings ----------------------------------------------------
 
@@ -233,6 +243,34 @@ TEST(ProjectTest, BuildOutputContainsTargetInfo) {
   EXPECT_NE(out.find(".ccbuild/obj/myapp/src/main.o"), std::string::npos);
 }
 
+TEST(ProjectTest, BuildOutputContainsIncludeDirs) {
+  Project p("test");
+  auto& exe = p.add_executable("app", { "main.cc" });
+  exe.add_include_dirs({ "includes/pub" }, Visibility::Public);
+  exe.add_include_dirs({ "includes/priv" }, Visibility::Private);
+
+  testing::internal::CaptureStdout();
+  static_cast<void>(p.build(/*dry_run=*/true));
+  std::string out = testing::internal::GetCapturedStdout();
+
+  EXPECT_NE(out.find("includes/pub"), std::string::npos);
+  EXPECT_NE(out.find("includes/priv"), std::string::npos);
+}
+
+TEST(ProjectTest, BuildOutputContainsLinkOptions) {
+  Project p("test");
+  auto& exe = p.add_executable("app", { "main.cc" });
+  exe.add_link_options({ "-lpthread", "-lz" });
+
+  testing::internal::CaptureStdout();
+  static_cast<void>(p.build(/*dry_run=*/true));
+  std::string out = testing::internal::GetCapturedStdout();
+
+  EXPECT_NE(out.find("link opts:"), std::string::npos);
+  EXPECT_NE(out.find("-lpthread"), std::string::npos);
+  EXPECT_NE(out.find("-lz"), std::string::npos);
+}
+
 TEST(ProjectTest, BuildOutputContainsPlanSummary) {
   Project p("test");
   p.add_library("lib", { "a.cc", "b.cc" });
@@ -245,6 +283,27 @@ TEST(ProjectTest, BuildOutputContainsPlanSummary) {
   EXPECT_NE(out.find("3 compile"), std::string::npos);
   EXPECT_NE(out.find("1 archive"), std::string::npos);
   EXPECT_NE(out.find("1 link"), std::string::npos);
+}
+
+TEST(ProjectTest, NonDryRunBuildSucceeds) {
+  TempFile src("prj_test_main.cc");
+  {
+    std::ofstream f(src.path);
+    ASSERT_TRUE(f.is_open());
+    f << "int main() { return 0; }\n";
+  }
+
+  Project p("test_project");
+  p.add_executable("app", { src.path });
+
+  testing::internal::CaptureStdout();
+  testing::internal::CaptureStderr();
+  const int result = p.build(/*dry_run=*/false);
+  testing::internal::GetCapturedStdout();
+  testing::internal::GetCapturedStderr();
+
+  EXPECT_EQ(result, 0);
+  EXPECT_TRUE(std::filesystem::exists(".ccbuild/bin/app"));
 }
 
 }  // namespace
