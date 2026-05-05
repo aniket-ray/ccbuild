@@ -2,7 +2,7 @@
   <h1>ccbuild</h1>
   <p><strong>A build system for C++ where your build scripts are C++.</strong></p>
 
-  [![CI](https://github.com/aniket-ray/ccbuild/actions/workflows/ci.yml/badge.svg?branch=development)](https://github.com/aniket-ray/ccbuild/actions/workflows/ci.yml)
+  [![CI](https://github.com/aniket-ray/ccbuild/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aniket-ray/ccbuild/actions/workflows/ci.yml)
   [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
   [![C++20](https://img.shields.io/badge/C++-20-blue.svg)](https://isocpp.org/)
 </div>
