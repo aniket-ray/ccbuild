@@ -370,7 +370,7 @@ TEST_F(NinjaBridgeTest, MultipleLinkOptionsSeparation) {
 
   Project p("mlo_test");
   auto& app = p.add_executable("app", { src.path });
-  app.add_link_options({ "-O0", "-Wl,-dead_strip" });
+  app.add_link_options({ "-s", "-v" });
 
   testing::internal::CaptureStdout();
   testing::internal::CaptureStderr();
