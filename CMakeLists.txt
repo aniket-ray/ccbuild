@@ -202,7 +202,7 @@ if (BUILD_TESTING)
                         COMMAND ${LCOV} --directory . --capture --output-file coverage.info
                         --rc branch_coverage=1 --ignore-errors mismatch,gcov
                         COMMAND ${LCOV} --remove coverage.info
-                        '*/ninja/*' '*/tests/*' '/usr/*' '*/_deps/*'
+                        '*/ninja/*' '*/tests/*' '/usr/*' '*/_deps/*' '*/build.cc' '*/examples/*'
                         --output-file coverage.filtered.info
                         --rc branch_coverage=1 --ignore-errors unused,mismatch,gcov
                         COMMAND ${GENHTML} coverage.filtered.info

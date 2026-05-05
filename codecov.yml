@@ -19,3 +19,5 @@ ignore:
   - "tests/**"
   - "build/**"
   - "_deps/**"
+  - "build.cc"
+  - "examples/**"
