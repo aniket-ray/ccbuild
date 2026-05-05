@@ -200,11 +200,11 @@ if (BUILD_TESTING)
                         COMMAND ${LCOV} --directory . --zerocounters
                         COMMAND $<TARGET_FILE:ccbuild_tests>
                         COMMAND ${LCOV} --directory . --capture --output-file coverage.info
-                        --rc branch_coverage=1 --ignore-errors mismatch
+                        --rc branch_coverage=1 --ignore-errors mismatch,gcov
                         COMMAND ${LCOV} --remove coverage.info
                         '*/ninja/*' '*/tests/*' '/usr/*' '*/_deps/*'
                         --output-file coverage.filtered.info
-                        --rc branch_coverage=1 --ignore-errors unused
+                        --rc branch_coverage=1 --ignore-errors unused,mismatch,gcov
                         COMMAND ${GENHTML} coverage.filtered.info
                         --output-directory coverage-report
                         --branch-coverage
