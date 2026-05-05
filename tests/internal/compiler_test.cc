@@ -39,6 +39,11 @@ TEST(IdentifyKindTest, ClangBeatsGcc) {
   EXPECT_EQ(identify_kind("clang with gcc compatibility"), CompilerKind::Clang);
 }
 
+TEST(IdentifyKindTest, DetectsLowercaseGcc) {
+  EXPECT_EQ(identify_kind("gcc version 4.8.5"), CompilerKind::Gcc);
+  EXPECT_EQ(identify_kind("SomeTool based on gcc 9.3.0"), CompilerKind::Gcc);
+}
+
 // -- extract_version -----------------------------------------------------
 
 TEST(ExtractVersionTest, ExtractsStandardVersion) {
