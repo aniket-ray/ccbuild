@@ -140,6 +140,7 @@ if (BUILD_TESTING)
             tests/targets/static_library_test.cc
             tests/internal/validators_test.cc
             tests/internal/compiler_test.cc
+            tests/internal/ninja_bridge_test.cc
             tests/project/project_test.cc
     )
 

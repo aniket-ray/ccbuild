@@ -115,6 +115,7 @@ void create_rules(State& state, const std::string& compiler, int standard) {
     EvalString cmd;
     text(cmd, "ar rcs ");
     var(cmd, "ldflags");  // per-target linker flags
+    text(cmd, " ");
     var(cmd, "out");
     text(cmd, " ");
     var(cmd, "in");
@@ -129,7 +130,7 @@ void create_rules(State& state, const std::string& compiler, int standard) {
   }
 }
 
-// -- Target Graph → Ninja Edges ------------------------------------------
+// -- Target Graph -> Ninja Edges -----------------------------------------
 
 /// Translate a single Target into Ninja Edges and Nodes.
 ///
@@ -258,10 +259,21 @@ Node* add_target_edges(State& state, const Target& target) {
     state.AddIn(final_edge, obj_node->path(), 0);
   }
 
-  // Inputs: outputs of link dependencies (for linking libraries together).
-  for (const Target& dep : target.link_deps()) {
-    const std::string dep_output = dep.output_filename();
-    state.AddIn(final_edge, dep_output, 0);
+  // Libraries: only archive own object files (no link-dep archives).
+  // Executables: recursively collect all transitive library archives.
+  if (target.kind() == TargetKind::Executable) {
+    std::unordered_set<std::string_view> link_visited;
+    std::function<void(const Target&)> collect_link_inputs =
+        [&](const Target& t) {
+          for (const Target& dep : t.link_deps()) {
+            if (link_visited.insert(dep.name()).second) {
+              const std::string dep_output = dep.output_filename();
+              state.AddIn(final_edge, dep_output, 0);
+              collect_link_inputs(dep);
+            }
+          }
+        };
+    collect_link_inputs(target);
   }
 
   std::string err;
