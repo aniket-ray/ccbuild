@@ -58,19 +58,19 @@ int main() {
   // -- ccbuildlib: ccbuild core (static library) -------------------------
   auto& ccbuildlib =
       p.add_library("ccbuildlib", {
+                                      "src/core/executable.cc",
+                                      "src/core/project.cc",
+                                      "src/core/static_library.cc",
                                       "src/core/target.cc",
-                                      "src/targets/executable.cc",
-                                      "src/targets/static_library.cc",
-                                      "src/internal/ninja_bridge.cc",
                                       "src/internal/compiler.cc",
-                                      "src/project/project.cc",
+                                      "src/internal/ninja_bridge.cc",
                                   });
   ccbuildlib.add_include_dirs({ "include", "ninja/src", "src" },
                               ccbuild::Visibility::Private);
   ccbuildlib.link(ninjacore);
 
   // -- ccbuild: CLI executable -------------------------------------------
-  auto& cli = p.add_executable("ccbuild", { "src/main.cc" });
+  auto& cli = p.add_executable("ccbuild", { "src/cli/main.cc" });
   cli.link(ccbuildlib).link(ninjacore);
   cli.add_link_options({ "-lpthread" });
 

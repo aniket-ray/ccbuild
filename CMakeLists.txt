@@ -77,13 +77,12 @@ endif ()
 
 # ccbuild library
 add_library(ccbuildlib STATIC
+        src/core/executable.cc
+        src/core/project.cc
+        src/core/static_library.cc
         src/core/target.cc
-        src/targets/executable.cc
-        src/targets/static_library.cc
-        src/internal/ninja_bridge.cc
         src/internal/compiler.cc
-        src/internal/compiler.h
-        src/project/project.cc
+        src/internal/ninja_bridge.cc
 )
 
 target_include_directories(ccbuildlib
@@ -99,7 +98,7 @@ if (CCBUILD_COVERAGE)
 endif ()
 
 # ccbuild cli
-add_executable(ccbuild src/main.cc)
+add_executable(ccbuild src/cli/main.cc)
 target_link_libraries(ccbuild PRIVATE ccbuildlib)
 target_compile_definitions(ccbuild PRIVATE
     CCBUILD_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}"
@@ -141,13 +140,13 @@ if (BUILD_TESTING)
     FetchContent_MakeAvailable(googletest)
 
     add_executable(ccbuild_tests
+            tests/core/executable_test.cc
+            tests/core/project_test.cc
+            tests/core/static_library_test.cc
             tests/core/target_test.cc
-            tests/targets/executable_test.cc
-            tests/targets/static_library_test.cc
-            tests/internal/validators_test.cc
             tests/internal/compiler_test.cc
             tests/internal/ninja_bridge_test.cc
-            tests/project/project_test.cc
+            tests/internal/validators_test.cc
     )
 
     target_link_libraries(ccbuild_tests PRIVATE ccbuildlib GTest::gtest_main)
