@@ -83,6 +83,7 @@ add_library(ccbuildlib STATIC
         src/core/target.cc
         src/internal/compiler.cc
         src/internal/ninja_bridge.cc
+        src/internal/process.cc
 )
 
 target_include_directories(ccbuildlib
@@ -146,11 +147,12 @@ if (BUILD_TESTING)
             tests/core/target_test.cc
             tests/internal/compiler_test.cc
             tests/internal/ninja_bridge_test.cc
+            tests/internal/process_test.cc
             tests/internal/validators_test.cc
     )
 
     target_link_libraries(ccbuild_tests PRIVATE ccbuildlib GTest::gtest_main)
-    target_include_directories(ccbuild_tests PRIVATE src)
+    target_include_directories(ccbuild_tests PRIVATE src tests)
     if (CCBUILD_COVERAGE)
         target_compile_options(ccbuild_tests PRIVATE ${CCBUILD_COVERAGE_COMPILE_FLAGS})
         target_link_options(ccbuild_tests PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
