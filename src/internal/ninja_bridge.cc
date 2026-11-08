@@ -165,11 +165,15 @@ class GraphBuilder {
       link_rule_ = add_rule(std::move(rule));
     }
 
-    // ar: archive objects into a static library.
+    // ar: archive objects into a static library.  The old archive is
+    // removed first, because `ar r` would keep members whose sources have
+    // since been removed from the target.
     {
       auto rule = std::make_unique<Rule>("ar");
       EvalString command;
-      command.AddText("ar rcs ");
+      command.AddText("rm -f ");
+      command.AddSpecial("out");
+      command.AddText(" && ar rcs ");
       command.AddSpecial("out");
       command.AddText(" ");
       command.AddSpecial("in");

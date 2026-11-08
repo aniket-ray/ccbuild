@@ -410,5 +410,31 @@ TEST_F(NinjaBridgeTest, SourcePathWithSpaces) {
   EXPECT_EQ(run(".ccbuild/bin/app"), 0);
 }
 
+// -- Archives ------------------------------------------------------------
+
+// Rebuilding an archive must drop members whose sources were removed;
+// `ar r` on an existing archive would keep them.
+TEST_F(NinjaBridgeTest, ArchiveDropsRemovedSources) {
+  write_file("a.cc", "int a() { return 1; }\n");
+  write_file("b.cc", "int b() { return 2; }\n");
+
+  {
+    Project p("archive_test");
+    p.add_library("lib", { "a.cc", "b.cc" });
+    ASSERT_EQ(build(p).rc, 0);
+  }
+  {
+    Project p("archive_test");
+    p.add_library("lib", { "a.cc" });
+    ASSERT_EQ(build(p).rc, 0);
+  }
+
+  const auto members = capture_process(
+      std::vector<std::string>{ "ar", "t", ".ccbuild/lib/liblib.a" });
+  ASSERT_TRUE(members.status.success());
+  EXPECT_NE(members.output.find("a.o"), std::string::npos);
+  EXPECT_EQ(members.output.find("b.o"), std::string::npos) << members.output;
+}
+
 }  // namespace
 }  // namespace ccbuild::internal
