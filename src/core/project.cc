@@ -1,6 +1,7 @@
 #include "ccbuild/project.h"
 
 #include <cstdio>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <string>
@@ -50,18 +51,28 @@ std::optional<std::string> Project::validate() const {
 
 // -- Build Execution -----------------------------------------------------
 
-int Project::build(bool dry_run) {
-  if (auto err = validate()) {
-    std::fprintf(stderr, "ccbuild: error: %s\n", err->c_str());
-    return 1;
-  }
+int Project::build(bool dry_run) noexcept {
+  // build() is the boundary between the user's build script and ccbuild:
+  // report every failure here instead of letting an exception escape into
+  // the script's main() and abort it without a message.
+  try {
+    if (auto err = validate()) {
+      std::fprintf(stderr, "ccbuild: error: %s\n", err->c_str());
+      return 1;
+    }
 
-  internal::print_plan(*this, stdout);
-  if (dry_run) {
-    return 0;
+    internal::print_plan(*this, stdout);
+    if (dry_run) {
+      return 0;
+    }
+    std::fflush(stdout);  // keep the plan ahead of Ninja's progress output
+    return internal::NinjaBridge::build(*this);
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "ccbuild: internal error: %s\n", e.what());
+  } catch (...) {
+    std::fprintf(stderr, "ccbuild: internal error: unknown exception\n");
   }
-  std::fflush(stdout);  // keep the plan ahead of Ninja's progress output
-  return internal::NinjaBridge::build(*this);
+  return 1;
 }
 
 }  // namespace ccbuild

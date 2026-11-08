@@ -79,12 +79,13 @@ class Project {
   /// Validate the project model and execute the build.
   ///
   /// Prints the build plan, then (unless @p dry_run is set) compiles and
-  /// links every out-of-date target.
+  /// links every out-of-date target.  Never throws: all failures, including
+  /// unexpected internal errors, are reported on stderr.
   ///
   /// @param dry_run  If true, validates and prints the build plan without
   ///                 actually compiling or linking.
   /// @return 0 on success, non-zero on validation or build failure.
-  [[nodiscard]] int build(bool dry_run = false);
+  [[nodiscard]] int build(bool dry_run = false) noexcept;
 
   /// @name Accessors
   /// @{
