@@ -74,7 +74,9 @@ int main() {
   ccbuildlib.link(ninjacore);
 
   // -- ccbuild: CLI executable -------------------------------------------
-  auto& cli = p.add_executable("ccbuild", { "src/cli/main.cc" });
+  auto& cli =
+      p.add_executable("ccbuild", { "src/cli/main.cc", "src/cli/driver.cc" });
+  cli.add_include_dirs({ "include", "src" }, ccbuild::Visibility::Private);
   cli.link(ccbuildlib).link(ninjacore);
   cli.add_link_options({ "-lpthread" });
 

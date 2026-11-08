@@ -1,6 +1,15 @@
 # 3.16 is required by googletest (fetched for the tests).
 cmake_minimum_required(VERSION 3.16)
-project(ccbuild CXX)
+# The version is defined once, in include/ccbuild/version.h.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/ccbuild/version.h"
+        _ccbuild_version_line
+        REGEX "^#define CCBUILD_VERSION_STRING \"[0-9]+\\.[0-9]+\\.[0-9]+\"")
+string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" CCBUILD_VERSION "${_ccbuild_version_line}")
+if (NOT CCBUILD_VERSION)
+    message(FATAL_ERROR "Could not read CCBUILD_VERSION_STRING from include/ccbuild/version.h")
+endif ()
+
+project(ccbuild VERSION ${CCBUILD_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -101,28 +110,39 @@ if (CCBUILD_COVERAGE)
     target_link_options(ccbuildlib PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
 endif ()
 
-# ccbuild cli
-add_executable(ccbuild src/cli/main.cc)
-target_link_libraries(ccbuild PRIVATE ccbuildlib)
-target_compile_definitions(ccbuild PRIVATE
-    CCBUILD_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}"
-    CCBUILD_BINARY_DIR="${CMAKE_BINARY_DIR}"
-)
+# -- ccbuild: the command-line driver ---------------------------------------
 
-# When libraries are coverage-instrumented, the runner must also link with
-# the profiler runtime, otherwise we get undefined ___llvm_profile_runtime.
+include(GNUInstallDirs)
+
+# The driver logic is a separate (uninstalled) library so tests can use it.
+add_library(ccbuildcli STATIC src/cli/driver.cc)
+target_include_directories(ccbuildcli PRIVATE src)
+target_link_libraries(ccbuildcli PUBLIC ccbuildlib)
+target_compile_definitions(ccbuildcli PRIVATE
+        # Where the install rules below put the headers and libraries that
+        # build scripts are compiled and linked against.
+        CCBUILD_INSTALL_INCLUDEDIR="${CMAKE_INSTALL_FULL_INCLUDEDIR}"
+        CCBUILD_INSTALL_LIBDIR="${CMAKE_INSTALL_FULL_LIBDIR}"
+        # The runner links against libraries built by this compiler, so
+        # build scripts are compiled with it too.
+        CCBUILD_HOST_CXX="${CMAKE_CXX_COMPILER}"
+)
+# Instrumented libraries need the matching runtime in every runner.
 if (CCBUILD_COVERAGE)
-    if (CCBUILD_COVERAGE_CLANG)
-        target_compile_definitions(ccbuild PRIVATE
-                CCBUILD_COVERAGE_LINK_FLAGS="-fprofile-instr-generate")
-    else ()
-        target_compile_definitions(ccbuild PRIVATE
-                CCBUILD_COVERAGE_LINK_FLAGS="--coverage")
-    endif ()
+    target_compile_definitions(ccbuildcli PRIVATE
+            CCBUILD_RUNNER_FLAGS="${CCBUILD_COVERAGE_LINK_FLAGS}")
+    target_compile_options(ccbuildcli PRIVATE ${CCBUILD_COVERAGE_COMPILE_FLAGS})
+    target_link_options(ccbuildcli PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
+endif ()
+
+add_executable(ccbuild src/cli/main.cc)
+target_include_directories(ccbuild PRIVATE src)
+target_link_libraries(ccbuild PRIVATE ccbuildcli)
+if (CCBUILD_COVERAGE)
+    target_link_options(ccbuild PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
 endif ()
 
 # -- install rules ------------------------------------------------------
-include(GNUInstallDirs)
 
 install(TARGETS ccbuild RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS ccbuildlib ninjacore ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
@@ -144,6 +164,7 @@ if (BUILD_TESTING)
     FetchContent_MakeAvailable(googletest)
 
     add_executable(ccbuild_tests
+            tests/cli/driver_test.cc
             tests/core/executable_test.cc
             tests/core/project_test.cc
             tests/core/static_library_test.cc
@@ -155,8 +176,15 @@ if (BUILD_TESTING)
             tests/internal/validators_test.cc
     )
 
-    target_link_libraries(ccbuild_tests PRIVATE ccbuildlib GTest::gtest_main)
     target_include_directories(ccbuild_tests PRIVATE src tests)
+    target_link_libraries(ccbuild_tests PRIVATE ccbuildcli GTest::gtest_main)
+    # Let the driver tests compile real build scripts against this build
+    # tree's headers and libraries, as an installed ccbuild would.
+    target_compile_definitions(ccbuild_tests PRIVATE
+            CCBUILD_TEST_INCLUDE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/include"
+            CCBUILD_TEST_LIB_DIR="$<TARGET_FILE_DIR:ccbuildlib>"
+    )
+    # (libninjacore.a is written next to libccbuildlib.a.)
     if (CCBUILD_COVERAGE)
         target_compile_options(ccbuild_tests PRIVATE ${CCBUILD_COVERAGE_COMPILE_FLAGS})
         target_link_options(ccbuild_tests PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
