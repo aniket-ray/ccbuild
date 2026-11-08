@@ -1,7 +1,13 @@
 #include "cli/driver.h"
 
+#include <array>
+#include <charconv>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
@@ -53,14 +59,59 @@ constexpr std::string_view kCoreLibrary = "libccbuildlib.a";
   return out;
 }
 
-/// Compile build.cc into the runner.
+/// Read a whole file, or std::nullopt if it cannot be read.
+std::optional<std::string> read_file(const fs::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return std::nullopt;
+  }
+  return std::string(std::istreambuf_iterator<char>(in),
+                     std::istreambuf_iterator<char>());
+}
+
+/// Replace `path` with `contents` atomically (write a temporary file, then
+/// rename it over `path`).
+bool write_file_atomically(const fs::path& path, std::string_view contents) {
+  fs::path temp = path;
+  temp += ".tmp";
+  {
+    std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+    out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    if (!out.flush()) {
+      return false;
+    }
+  }
+  std::error_code ec;
+  fs::rename(temp, path, ec);
+  return !ec;
+}
+
+/// "<size> <mtime in ns>" for an existing file, "missing" otherwise.
+std::string describe_file(const fs::path& path) {
+  std::error_code ec;
+  const auto size = fs::file_size(path, ec);
+  if (ec) {
+    return "missing";
+  }
+  const auto mtime = fs::last_write_time(path, ec);
+  if (ec) {
+    return "missing";
+  }
+  const auto mtime_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            mtime.time_since_epoch())
+                            .count();
+  return std::to_string(size) + " " + std::to_string(mtime_ns);
+}
+
+/// Compile build.cc into the runner, recording `fingerprint` beside it.
 ///
 /// The compiler writes to a temporary file that replaces the runner only on
 /// success, so a failed or interrupted compile never leaves a broken runner.
 ///
 /// @return 0 on success, otherwise the exit code to report.
 int compile_runner(const std::string& compiler,
-                   const Installation& installation) {
+                   const Installation& installation,
+                   const std::string& fingerprint) {
   const fs::path runner(layout::kRunnerPath);
   fs::path temp = runner;
   temp += ".tmp";
@@ -88,6 +139,11 @@ int compile_runner(const std::string& compiler,
     std::fprintf(stderr, "ccbuild: error: cannot install %s: %s\n",
                  runner.c_str(), ec.message().c_str());
     return 1;
+  }
+  if (!write_file_atomically(fs::path(layout::kRunnerStampPath), fingerprint)) {
+    // The runner is fine; it will just be recompiled next time.
+    std::fprintf(stderr, "ccbuild: warning: cannot write %s\n",
+                 std::string(layout::kRunnerStampPath).c_str());
   }
   return 0;
 }
@@ -204,14 +260,41 @@ std::vector<std::string> runner_compile_command(
   return command;
 }
 
-bool runner_is_stale(const fs::path& runner, const fs::path& build_script) {
-  std::error_code ec;
-  const auto runner_time = fs::last_write_time(runner, ec);
-  if (ec) {
-    return true;  // missing or unreadable: (re)compile
+std::string runner_fingerprint(std::span<const std::string> command,
+                               const fs::path& build_script,
+                               std::span<const fs::path> libraries) {
+  std::string fingerprint = "ccbuild " + std::string(kVersion) + "\n";
+  fingerprint += "command " + internal::format_command(command) + "\n";
+
+  fingerprint +=
+      "script " + build_script.string() + " " + describe_file(build_script);
+  if (const auto contents = read_file(build_script)) {
+    // Also hash the contents: timestamps can be too coarse to tell two
+    // quick edits of the same size apart.
+    std::array<char, 2 * sizeof(std::size_t)> hex{};
+    const std::size_t hash = std::hash<std::string_view>{}(*contents);
+    const auto result =
+        std::to_chars(hex.data(), hex.data() + hex.size(), hash, 16);
+    fingerprint += ' ';
+    fingerprint.append(hex.data(), result.ptr);
   }
-  const auto script_time = fs::last_write_time(build_script, ec);
-  return ec || script_time >= runner_time;
+  fingerprint += '\n';
+
+  for (const auto& library : libraries) {
+    fingerprint +=
+        "library " + library.string() + " " + describe_file(library) + "\n";
+  }
+  return fingerprint;
+}
+
+bool runner_is_stale(const fs::path& runner, const fs::path& stamp,
+                     std::string_view fingerprint) {
+  std::error_code ec;
+  if (!fs::exists(runner, ec)) {
+    return true;
+  }
+  const auto recorded = read_file(stamp);
+  return !recorded || *recorded != fingerprint;
 }
 
 // -- Entry points --------------------------------------------------------
@@ -232,16 +315,26 @@ int build_project(const Installation& installation) {
     return 1;
   }
 
-  if (runner_is_stale(fs::path(layout::kRunnerPath), build_script)) {
-    const auto compiler = find_host_compiler();
-    if (!compiler) {
-      std::fprintf(stderr,
-                   "ccbuild: error: no C++ compiler found to compile %s.\n"
-                   "  Install c++, g++ or clang++.\n",
-                   build_script.c_str());
-      return 1;
-    }
-    if (const int rc = compile_runner(*compiler, installation); rc != 0) {
+  const auto compiler = find_host_compiler();
+  if (!compiler) {
+    std::fprintf(stderr,
+                 "ccbuild: error: no C++ compiler found to compile %s.\n"
+                 "  Install c++, g++ or clang++.\n",
+                 build_script.c_str());
+    return 1;
+  }
+
+  // Fingerprint the inputs before compiling, so that anything changed while
+  // the compiler runs is detected next time.
+  const fs::path runner(layout::kRunnerPath);
+  const std::string fingerprint = runner_fingerprint(
+      runner_compile_command(*compiler, installation, build_script, runner),
+      build_script, installation.libraries());
+
+  if (runner_is_stale(runner, fs::path(layout::kRunnerStampPath),
+                      fingerprint)) {
+    if (const int rc = compile_runner(*compiler, installation, fingerprint);
+        rc != 0) {
       return rc;
     }
   }

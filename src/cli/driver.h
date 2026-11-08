@@ -66,10 +66,25 @@ struct Installation {
     const std::filesystem::path& build_script,
     const std::filesystem::path& output);
 
-/// Whether the runner must be (re)compiled: it is missing, or not newer
-/// than the build script.
+/// Describe everything a compiled runner depends on: the ccbuild version,
+/// the compile command, the size and modification time of the build script
+/// and of each library, and a hash of the build script's contents.
+///
+/// The fingerprint is taken before compiling and stored next to the runner;
+/// the runner is reused only while the fingerprint is exactly unchanged.
+/// So an edit saved while build.cc is being compiled, or libraries replaced
+/// by files with older timestamps (e.g. a reinstall), still trigger a
+/// recompile.
+[[nodiscard]] std::string runner_fingerprint(
+    std::span<const std::string> command,
+    const std::filesystem::path& build_script,
+    std::span<const std::filesystem::path> libraries);
+
+/// Whether the runner must be (re)compiled: the runner or its stamp file is
+/// missing, or the stamp does not contain exactly `fingerprint`.
 [[nodiscard]] bool runner_is_stale(const std::filesystem::path& runner,
-                                   const std::filesystem::path& build_script);
+                                   const std::filesystem::path& stamp,
+                                   std::string_view fingerprint);
 
 /// Build the project in the current directory: compile build.cc into the
 /// runner (if the runner is stale) against `installation`, then run it.

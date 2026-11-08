@@ -90,42 +90,94 @@ TEST(DefaultInstallationTest, UsesRecordedAbsoluteDirectories) {
   EXPECT_TRUE(inst.lib_dir.is_absolute()) << inst.lib_dir;
 }
 
-// -- runner_is_stale ---------------------------------------------------
+// -- runner_fingerprint / runner_is_stale --------------------------------
 
-class RunnerIsStaleTest : public TempDirTest {
+class RunnerFingerprintTest : public TempDirTest {
  protected:
-  /// Create `path` with an mtime `offset_seconds` from a fixed base.
-  static void touch(const fs::path& path, int offset_seconds) {
-    write_file(path, "");
-    fs::last_write_time(path, base_ + std::chrono::seconds(offset_seconds));
+  void SetUp() override {
+    TempDirTest::SetUp();
+    write_file("build.cc", "int main() { return 0; }\n");
+    write_file("lib/libccbuildlib.a", "library v1");
   }
 
- private:
-  static inline const fs::file_time_type base_ =
-      fs::file_time_type::clock::now() - std::chrono::hours(1);
+  static std::string fingerprint(const std::vector<std::string>& command = {
+                                     "c++", "build.cc" }) {
+    const std::vector<fs::path> libraries = { "lib/libccbuildlib.a" };
+    return runner_fingerprint(command, "build.cc", libraries);
+  }
+
+  /// Give `path` a modification time `seconds` away from its current one.
+  static void shift_mtime(const fs::path& path, int seconds) {
+    fs::last_write_time(
+        path, fs::last_write_time(path) + std::chrono::seconds(seconds));
+  }
 };
 
-TEST_F(RunnerIsStaleTest, MissingRunnerIsStale) {
-  touch("build.cc", 0);
-  EXPECT_TRUE(runner_is_stale("runner", "build.cc"));
+TEST_F(RunnerFingerprintTest, IsDeterministic) {
+  EXPECT_EQ(fingerprint(), fingerprint());
+  EXPECT_NE(fingerprint().find(std::string(kVersion)), std::string::npos);
 }
 
-TEST_F(RunnerIsStaleTest, RunnerNewerThanScriptIsFresh) {
-  touch("build.cc", 0);
-  touch("runner", 1);
-  EXPECT_FALSE(runner_is_stale("runner", "build.cc"));
+TEST_F(RunnerFingerprintTest, ChangesWithBuildScriptContents) {
+  const auto before = fingerprint();
+  const auto mtime = fs::last_write_time("build.cc");
+  // Same size and same timestamp: only the content hash can tell.
+  write_file("build.cc", "int main() { return 1; }\n");
+  fs::last_write_time("build.cc", mtime);
+  EXPECT_NE(fingerprint(), before);
 }
 
-TEST_F(RunnerIsStaleTest, NewerScriptMakesRunnerStale) {
-  touch("runner", 0);
-  touch("build.cc", 1);
-  EXPECT_TRUE(runner_is_stale("runner", "build.cc"));
+TEST_F(RunnerFingerprintTest, ChangesWhenLibraryIsReplacedByAnOlderFile) {
+  // e.g. reinstalling ccbuild from a package keeps the files' old mtimes.
+  const auto before = fingerprint();
+  shift_mtime("lib/libccbuildlib.a", -3600);
+  EXPECT_NE(fingerprint(), before);
 }
 
-TEST_F(RunnerIsStaleTest, EqualTimestampsAreStale) {
-  touch("build.cc", 0);
-  touch("runner", 0);
-  EXPECT_TRUE(runner_is_stale("runner", "build.cc"));
+TEST_F(RunnerFingerprintTest, ChangesWithLibrarySize) {
+  const auto before = fingerprint();
+  const auto mtime = fs::last_write_time("lib/libccbuildlib.a");
+  write_file("lib/libccbuildlib.a", "library v1 with more code");
+  fs::last_write_time("lib/libccbuildlib.a", mtime);
+  EXPECT_NE(fingerprint(), before);
+}
+
+TEST_F(RunnerFingerprintTest, ChangesWithCompileCommand) {
+  EXPECT_NE(fingerprint({ "c++", "build.cc" }),
+            fingerprint({ "clang++", "build.cc" }));
+}
+
+TEST_F(RunnerFingerprintTest, RecordsMissingInputs) {
+  const auto before = fingerprint();
+  fs::remove("lib/libccbuildlib.a");
+  const auto after = fingerprint();
+  EXPECT_NE(after, before);
+  EXPECT_NE(after.find("missing"), std::string::npos);
+}
+
+TEST_F(RunnerFingerprintTest, MissingRunnerIsStale) {
+  write_file("runner.stamp", fingerprint());
+  EXPECT_TRUE(runner_is_stale("runner", "runner.stamp", fingerprint()));
+}
+
+TEST_F(RunnerFingerprintTest, MissingStampIsStale) {
+  write_file("runner", "");
+  EXPECT_TRUE(runner_is_stale("runner", "runner.stamp", fingerprint()));
+}
+
+TEST_F(RunnerFingerprintTest, MatchingStampIsFresh) {
+  write_file("runner", "");
+  write_file("runner.stamp", fingerprint());
+  EXPECT_FALSE(runner_is_stale("runner", "runner.stamp", fingerprint()));
+}
+
+TEST_F(RunnerFingerprintTest, EditDuringCompileIsDetected) {
+  // The stamp holds the fingerprint taken *before* compiling; an edit saved
+  // while the compiler ran no longer matches it.
+  write_file("runner", "");
+  write_file("runner.stamp", fingerprint());
+  write_file("build.cc", "int main() { return 2; }\n");
+  EXPECT_TRUE(runner_is_stale("runner", "runner.stamp", fingerprint()));
 }
 
 // -- runner_compile_command ----------------------------------------------
@@ -234,14 +286,8 @@ class BuildProjectTest : public TempDirTest {
     return result;
   }
 
-  /// Write build.cc.  Any cached runner is backdated so that it is older
-  /// than the new script even on filesystems with coarse timestamps.
   static void write_build_script(std::string_view contents) {
     write_file("build.cc", contents);
-    if (fs::exists(".ccbuild/runner")) {
-      fs::last_write_time(".ccbuild/runner", fs::file_time_type::clock::now() -
-                                                 std::chrono::minutes(1));
-    }
   }
 
   static constexpr std::string_view kHelloScript = R"(
@@ -262,6 +308,7 @@ TEST_F(BuildProjectTest, CompilesAndRunsBuildScript) {
   EXPECT_EQ(first.rc, 0) << first.out;
   EXPECT_NE(first.out.find("compiling build.cc"), std::string::npos);
   EXPECT_TRUE(fs::exists(".ccbuild/runner"));
+  EXPECT_TRUE(fs::exists(".ccbuild/runner.stamp"));
   EXPECT_FALSE(fs::exists(".ccbuild/runner.tmp"));
   EXPECT_TRUE(fs::exists(".ccbuild/bin/hello"));
   EXPECT_FALSE(fs::exists(".ninja_lock"));  // Ninja's files stay in .ccbuild
@@ -278,6 +325,14 @@ TEST_F(BuildProjectTest, PropagatesBuildScriptExitCode) {
   EXPECT_EQ(build().rc, 3);
 }
 
+TEST_F(BuildProjectTest, RewrittenBuildScriptIsRecompiled) {
+  // Same length, written within the same second: only the content differs.
+  write_build_script("int main() { return 3; }\n");
+  EXPECT_EQ(build().rc, 3);
+  write_build_script("int main() { return 4; }\n");
+  EXPECT_EQ(build().rc, 4);
+}
+
 TEST_F(BuildProjectTest, ReportsBuildScriptCrash) {
   write_build_script("#include <cstdlib>\nint main() { std::abort(); }\n");
 
@@ -292,8 +347,8 @@ TEST_F(BuildProjectTest, BuildScriptCompileErrorKeepsPreviousRunner) {
   write_build_script(kHelloScript);
   ASSERT_EQ(build().rc, 0);
 
-  write_build_script("int main() { this is not C++ }\n");
   const auto runner_time = fs::last_write_time(".ccbuild/runner");
+  write_build_script("int main() { this is not C++ }\n");
   const auto result = build();
   EXPECT_NE(result.rc, 0);
   EXPECT_NE(result.out.find("failed to compile build.cc"), std::string::npos);
