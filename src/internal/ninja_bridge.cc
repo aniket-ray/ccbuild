@@ -288,7 +288,7 @@ Node* add_target_edges(State& state, const Target& target) {
 
 int NinjaBridge::build(const Project& project) {
   // 1. Detect the C++ compiler.
-  auto compiler = detect_compiler();
+  auto compiler = internal::detect_compiler();
   if (!compiler) {
     fprintf(stderr,
             "ccbuild: error: no C++ compiler found.\n"

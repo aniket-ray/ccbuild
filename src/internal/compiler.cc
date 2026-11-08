@@ -1,15 +1,19 @@
 #include "internal/compiler.h"
 
 #include <array>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
-#include <filesystem>
+#include <optional>
 #include <regex>
 #include <string>
+#include <string_view>
 
-namespace ccbuild {
+#include "internal/process.h"
 
-// -- CompilerKind Output -------------------------------------------------
+namespace ccbuild::internal {
+
+// -- CompilerInfo --------------------------------------------------------
 
 std::string_view CompilerInfo::kind_str() const {
   switch (kind) {
@@ -23,11 +27,11 @@ std::string_view CompilerInfo::kind_str() const {
   return "Unknown";
 }
 
-// -- Compiler Identification ---------------------------------------------
-
-namespace internal {
+// -- Parsing helpers -----------------------------------------------------
 
 CompilerKind identify_kind(std::string_view version_output) {
+  // Check for clang first: clang's banner may also mention gcc
+  // compatibility.
   if (version_output.find("clang") != std::string_view::npos) {
     return CompilerKind::Clang;
   }
@@ -49,112 +53,56 @@ std::string extract_version(const std::string& version_output) {
 }
 
 int extract_major(const std::string& version) {
-  if (version.empty()) {
+  int major = 0;
+  const auto* const begin = version.data();
+  const auto* const end = begin + version.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, major);
+  if (ec != std::errc() || ptr == begin) {
     return 0;
   }
-  try {
-    return std::stoi(version);
-  } catch (...) {
-    return 0;
-  }
+  return major;
 }
 
-}  // namespace internal
+// -- Detection -----------------------------------------------------------
 
-// -- Compiler Detection Helpers (file-local) -----------------------------
-
-namespace {
-
-namespace fs = std::filesystem;
-
-/// Run a shell command and capture its stdout (first line, trimmed).
-/// Returns an empty string if the command fails or produces no output.
-std::string capture_stdout(const std::string& cmd) {
-  static constexpr std::size_t kBufferSize = 256;
-  std::array<char, kBufferSize> buf{};
-
-  FILE* pipe = popen(cmd.c_str(), "r");
-  if (pipe == nullptr) {
-    return {};
-  }
-
-  std::string result;
-  while (std::fgets(buf.data(), static_cast<int>(buf.size()), pipe) !=
-         nullptr) {
-    result += buf.data();
-  }
-  pclose(pipe);
-
-  // Trim trailing newline / carriage return.
-  while (!result.empty() && (result.back() == '\n' || result.back() == '\r')) {
-    result.pop_back();
-  }
-  return result;
-}
-
-/// Resolve a compiler name to a full path using `which`.
-/// Returns an empty string if the command is not found or not executable.
-std::string resolve_path(const std::string& name) {
-  const auto output = capture_stdout("which " + name + " 2>/dev/null");
-  if (output.empty()) {
-    return {};
-  }
-  if (!fs::exists(output)) {
-    return {};
-  }
-  return output;
-}
-
-/// Try to detect compiler info from a name or path candidate.
-/// Returns std::nullopt if the candidate cannot be found or produces
-/// no version output.
-std::optional<CompilerInfo> try_compiler(const std::string& name_or_path) {
-  // Resolve to full path if the candidate is not an absolute/existing path.
-  std::string path = name_or_path;
-  if (!fs::exists(path)) {
-    path = resolve_path(name_or_path);
-  }
-  if (path.empty()) {
+std::optional<CompilerInfo> probe_compiler(std::string_view name_or_path) {
+  auto path = find_executable(name_or_path);
+  if (!path) {
     return std::nullopt;
   }
 
-  // Run --version and parse the output.
-  const auto version_output = capture_stdout(path + " --version 2>&1");
-  if (version_output.empty()) {
+  const std::array<std::string, 2> argv = { *path, "--version" };
+  const auto probe = capture_process(argv);
+  if (!probe.status.success() || probe.output.empty()) {
     return std::nullopt;
   }
 
   CompilerInfo info;
-  info.path = path;
-  info.kind = internal::identify_kind(version_output);
-  info.version = internal::extract_version(version_output);
-  info.major_version = internal::extract_major(info.version);
+  info.path = std::move(*path);
+  info.kind = identify_kind(probe.output);
+  info.version = extract_version(probe.output);
+  info.major_version = extract_major(info.version);
   return info;
 }
 
-}  // namespace
-
-// -- Public API ----------------------------------------------------------
-
 std::optional<CompilerInfo> detect_compiler() {
-  // Honour the $CXX environment variable if set and usable.
-  if (const char* cxx = std::getenv("CXX")) {
-    if (auto info = try_compiler(cxx)) {
+  // Honour $CXX if set and usable.
+  if (const char* cxx = std::getenv("CXX"); cxx != nullptr && *cxx != '\0') {
+    if (auto info = probe_compiler(cxx)) {
+      return info;
+    }
+    std::fprintf(stderr,
+                 "ccbuild: warning: $CXX ('%s') is not a usable compiler; "
+                 "falling back to g++/clang++\n",
+                 cxx);
+  }
+
+  for (const std::string_view candidate : { "g++", "clang++" }) {
+    if (auto info = probe_compiler(candidate)) {
       return info;
     }
   }
-
-  // Try g++ as the most common default.
-  if (auto info = try_compiler("g++")) {
-    return info;
-  }
-
-  // Fall back to clang++.
-  if (auto info = try_compiler("clang++")) {
-    return info;
-  }
-
   return std::nullopt;
 }
 
-}  // namespace ccbuild
+}  // namespace ccbuild::internal
