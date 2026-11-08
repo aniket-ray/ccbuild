@@ -58,10 +58,10 @@ std::string compile_flags(const Target& target) {
   return flags;
 }
 
-/// The linker flags for `target`, inserted as written.
+/// The linker flags for executable `target`, inserted as written.
 std::string linker_flags(const Target& target) {
   std::string flags;
-  for (const auto& option : target.link_options()) {
+  for (const auto& option : link_flags(target)) {
     append_fragment(flags, option);
   }
   return flags;
@@ -101,7 +101,7 @@ class GraphBuilder {
     const std::string output = target.output_filename();
     if (target.kind() == TargetKind::Executable) {
       // Link inputs: own objects, then every transitive library archive in
-      // dependency order.
+      // dependency order; library link options are inherited.
       std::vector<std::string> inputs = std::move(objects);
       for (const Target* lib : link_order(target)) {
         inputs.push_back(lib->output_filename());
@@ -112,8 +112,7 @@ class GraphBuilder {
       }
     } else {
       // A static library archives only its own objects.
-      if (!add_edge(ar_rule_, objects, output,
-                    { { "ldflags", linker_flags(target) } }, err)) {
+      if (!add_edge(ar_rule_, objects, output, {}, err)) {
         return nullptr;
       }
     }
@@ -147,16 +146,17 @@ class GraphBuilder {
       cc_rule_ = add_rule(std::move(rule));
     }
 
-    // link: link objects and archives into an executable.
+    // link: link objects and archives into an executable.  Link flags come
+    // last so that -l libraries resolve symbols from everything before them.
     {
       auto rule = std::make_unique<Rule>("link");
       EvalString command;
-      command.AddText(compiler + " ");
-      command.AddSpecial("ldflags");
+      command.AddText(compiler + " -o ");
+      command.AddSpecial("out");
       command.AddText(" ");
       command.AddSpecial("in");
-      command.AddText(" -o ");
-      command.AddSpecial("out");
+      command.AddText(" ");
+      command.AddSpecial("ldflags");
       rule->AddBinding("command", command);
       rule->AddBinding("description", eval({ text("LINK "), out() }));
       link_rule_ = add_rule(std::move(rule));
@@ -167,8 +167,6 @@ class GraphBuilder {
       auto rule = std::make_unique<Rule>("ar");
       EvalString command;
       command.AddText("ar rcs ");
-      command.AddSpecial("ldflags");
-      command.AddText(" ");
       command.AddSpecial("out");
       command.AddText(" ");
       command.AddSpecial("in");

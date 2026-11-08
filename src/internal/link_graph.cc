@@ -65,4 +65,14 @@ std::vector<std::string> compile_include_dirs(const Target& target) {
   return dirs;
 }
 
+std::vector<std::string> link_flags(const Target& target) {
+  const auto own = target.link_options();
+  std::vector<std::string> flags(own.begin(), own.end());
+  for (const Target* lib : link_order(target)) {
+    const auto inherited = lib->link_options();
+    flags.insert(flags.end(), inherited.begin(), inherited.end());
+  }
+  return flags;
+}
+
 }  // namespace ccbuild::internal

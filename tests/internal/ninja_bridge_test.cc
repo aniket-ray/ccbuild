@@ -100,14 +100,17 @@ TEST_F(NinjaBridgeTest, BuildSucceedsWithComplexGraph) {
   EXPECT_EQ(run(".ccbuild/bin/my_app"), 0);
 }
 
-TEST_F(NinjaBridgeTest, LibraryWithLinkOptionsBuildsCorrectly) {
+// A library's link options are for the executables that link it; `ar`
+// never sees them (it would reject "-pthread" as conflicting operations).
+TEST_F(NinjaBridgeTest, LibraryLinkOptionsAreNotPassedToAr) {
   write_file("lib.cc", "int func() { return 1; }\n");
 
   Project p("ar_test");
   auto& lib = p.add_library("my_lib", { "lib.cc" });
-  lib.add_link_options({ "-s" });
+  lib.add_link_options({ "-pthread" });
 
-  EXPECT_EQ(build(p).rc, 0);
+  const auto result = build(p);
+  EXPECT_EQ(result.rc, 0) << result.out;
   EXPECT_TRUE(fs::exists(".ccbuild/lib/libmy_lib.a"));
 }
 
@@ -318,7 +321,55 @@ TEST_F(NinjaBridgeTest, SharedDependencyIsLinkedAfterAllUsers) {
   EXPECT_EQ(run(".ccbuild/bin/app"), 0);
 }
 
+// -- Link options --------------------------------------------------------
+
+// Link options come after the objects and archives, so an archive (or -l
+// library) passed as a link option can resolve symbols the objects need.
+TEST_F(NinjaBridgeTest, LinkOptionsFollowLinkInputs) {
+  write_file("dep.cc", "int dep() { return 0; }\n");
+  write_file("main.cc", "int dep();\nint main() { return dep(); }\n");
+
+  Project lib_project("prebuilt");
+  lib_project.add_library("dep", { "dep.cc" });
+  ASSERT_EQ(build(lib_project).rc, 0);
+
+  Project p("link_opts_order_test");
+  p.add_executable("app", { "main.cc" })
+      .add_link_options({ ".ccbuild/lib/libdep.a" });
+
+  const auto result = build(p);
+  EXPECT_EQ(result.rc, 0) << result.out;
+  EXPECT_EQ(run(".ccbuild/bin/app"), 0);
+}
+
+// A static library's link options describe what its users must link, so
+// they are applied when linking executables that use it.
+TEST_F(NinjaBridgeTest, LibraryLinkOptionsApplyToExecutables) {
+  write_file("lib.cc", "int lib() { return 0; }\n");
+  write_file("main.cc", "int lib();\nint main() { return lib(); }\n");
+
+  Project p("lib_link_opts_test");
+  auto& lib = p.add_library("lib", { "lib.cc" });
+  lib.add_link_options({ "-Wl,-Map,app.map" });  // observable side effect
+  p.add_executable("app", { "main.cc" }).link(lib);
+
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_TRUE(fs::exists("app.map"));
+}
+
 // -- Argument quoting ----------------------------------------------------
+
+TEST_F(NinjaBridgeTest, LinkOptionsAreShellSyntax) {
+  write_file("main.cc", "int main() { return 0; }\n");
+
+  Project p("link_shell_syntax_test");
+  p.add_executable("app", { "main.cc" })
+      .add_link_options({ "-Wl,-Map,one.map $(echo -pthread)" });
+
+  const auto result = build(p);
+  EXPECT_EQ(result.rc, 0) << result.out;
+  EXPECT_TRUE(fs::exists("one.map"));
+}
 
 TEST_F(NinjaBridgeTest, SourcePathWithSpaces) {
   write_file("my src/main.cc", "int main() { return 0; }\n");

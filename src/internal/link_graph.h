@@ -26,6 +26,10 @@ namespace ccbuild::internal {
 [[nodiscard]] std::vector<std::string> compile_include_dirs(
     const Target& target);
 
+/// The flags for linking executable `target`: its own link options followed
+/// by those of each library in link_order(target).
+[[nodiscard]] std::vector<std::string> link_flags(const Target& target);
+
 }  // namespace ccbuild::internal
 
 #endif  // CCBUILD_INTERNAL_LINK_GRAPH_H

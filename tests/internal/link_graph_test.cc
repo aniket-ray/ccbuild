@@ -139,5 +139,26 @@ TEST(CompileIncludeDirsTest, RemovesDuplicates) {
   EXPECT_EQ(compile_include_dirs(app), (Strings{ "shared", "a", "b" }));
 }
 
+// -- link_flags ----------------------------------------------------------
+
+TEST(LinkFlagsTest, OwnFlagsThenLibraryFlagsInLinkOrder) {
+  StaticLibrary base("base", { "base.cc" });
+  base.add_link_options({ "-lbase_sys" });
+  StaticLibrary mid("mid", { "mid.cc" });
+  mid.add_link_options({ "-lmid_sys" });
+  mid.link(base);
+
+  Executable app("app", { "main.cc" });
+  app.add_link_options({ "-static" });
+  app.link(mid);
+
+  EXPECT_EQ(link_flags(app), (Strings{ "-static", "-lmid_sys", "-lbase_sys" }));
+}
+
+TEST(LinkFlagsTest, NoFlags) {
+  Executable app("app", { "main.cc" });
+  EXPECT_TRUE(link_flags(app).empty());
+}
+
 }  // namespace
 }  // namespace ccbuild::internal
