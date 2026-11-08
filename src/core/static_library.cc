@@ -1,5 +1,12 @@
 #include "ccbuild/static_library.h"
 
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "internal/layout.h"
+
 namespace ccbuild {
 
 StaticLibrary::StaticLibrary(std::string_view name,
@@ -7,14 +14,10 @@ StaticLibrary::StaticLibrary(std::string_view name,
     : Target(name, std::move(sources)) {}
 
 std::string StaticLibrary::output_filename() const {
-  static constexpr std::string_view kLibPrefix = ".ccbuild/lib/lib";
-  static constexpr std::string_view kLibSuffix = ".a";
-
-  std::string result;
-  result.reserve(kLibPrefix.size() + name().size() + kLibSuffix.size());
-  result += kLibPrefix;
+  std::string result(internal::layout::kLibDir);
+  result += "/lib";
   result += name();
-  result += kLibSuffix;
+  result += ".a";
   return result;
 }
 
