@@ -180,6 +180,41 @@ TEST_F(RunnerFingerprintTest, EditDuringCompileIsDetected) {
   EXPECT_TRUE(runner_is_stale("runner", "runner.stamp", fingerprint()));
 }
 
+// -- BuildLock -----------------------------------------------------------
+
+using BuildLockTest = TempDirTest;
+
+TEST_F(BuildLockTest, LocksAndCreatesTheFile) {
+  const BuildLock lock("lock", /*wait=*/false);
+  EXPECT_TRUE(lock.held()) << lock.error();
+  EXPECT_TRUE(lock.error().empty());
+  EXPECT_TRUE(fs::exists("lock"));
+}
+
+TEST_F(BuildLockTest, IsExclusive) {
+  const BuildLock first("lock", /*wait=*/false);
+  ASSERT_TRUE(first.held());
+
+  const BuildLock second("lock", /*wait=*/false);
+  EXPECT_FALSE(second.held());
+  EXPECT_NE(second.error().find("another ccbuild"), std::string::npos);
+}
+
+TEST_F(BuildLockTest, IsReleasedOnDestruction) {
+  auto first = std::make_unique<BuildLock>("lock", /*wait=*/false);
+  ASSERT_TRUE(first->held());
+  first.reset();
+
+  const BuildLock second("lock", /*wait=*/false);
+  EXPECT_TRUE(second.held());
+}
+
+TEST_F(BuildLockTest, ReportsUnopenableFile) {
+  const BuildLock lock("missing-dir/lock", /*wait=*/false);
+  EXPECT_FALSE(lock.held());
+  EXPECT_NE(lock.error().find("cannot open"), std::string::npos);
+}
+
 // -- runner_compile_command ----------------------------------------------
 
 TEST(RunnerCompileCommandTest, ContainsEverythingNeededToLink) {

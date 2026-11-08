@@ -86,6 +86,36 @@ struct Installation {
                                    const std::filesystem::path& stamp,
                                    std::string_view fingerprint);
 
+/// An exclusive lock on a project's build directory, held while ccbuild
+/// compiles and runs the build script.  Concurrent ccbuild invocations in
+/// one project therefore run one after another instead of overwriting each
+/// other's runner and Ninja logs.
+///
+/// This is an advisory flock(2) lock on `path`; it is released when the
+/// object is destroyed or the process exits.
+class BuildLock {
+ public:
+  /// Lock `path`, creating the file if needed.  With `wait`, blocks (after
+  /// saying so on stderr) while another process holds the lock; without
+  /// it, gives up immediately.
+  BuildLock(const std::filesystem::path& path, bool wait);
+  ~BuildLock();
+  BuildLock(const BuildLock&) = delete;
+  BuildLock& operator=(const BuildLock&) = delete;
+  BuildLock(BuildLock&&) = delete;
+  BuildLock& operator=(BuildLock&&) = delete;
+
+  /// Whether the lock is held.
+  [[nodiscard]] bool held() const { return fd_ >= 0; }
+
+  /// Why the lock is not held; empty if it is.
+  [[nodiscard]] const std::string& error() const { return error_; }
+
+ private:
+  int fd_ = -1;
+  std::string error_;
+};
+
 /// Build the project in the current directory: compile build.cc into the
 /// runner (if the runner is stale) against `installation`, then run it.
 ///

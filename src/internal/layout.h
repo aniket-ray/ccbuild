@@ -31,6 +31,9 @@ inline constexpr std::string_view kRunnerPath = ".ccbuild/runner";
 /// Fingerprint of the inputs the cached runner was compiled from.
 inline constexpr std::string_view kRunnerStampPath = ".ccbuild/runner.stamp";
 
+/// Lock file serializing concurrent ccbuild invocations in one project.
+inline constexpr std::string_view kLockPath = ".ccbuild/lock";
+
 /// Ninja's build and dependency logs (enable incremental builds).
 inline constexpr std::string_view kBuildLogPath = ".ccbuild/.ninja_log";
 inline constexpr std::string_view kDepsLogPath = ".ccbuild/.ninja_deps";

@@ -1,9 +1,15 @@
 #include "cli/driver.h"
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
 #include <array>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -297,6 +303,40 @@ bool runner_is_stale(const fs::path& runner, const fs::path& stamp,
   return !recorded || *recorded != fingerprint;
 }
 
+// -- BuildLock -----------------------------------------------------------
+
+BuildLock::BuildLock(const fs::path& path, bool wait) {
+  const int fd = open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+  if (fd < 0) {
+    error_ = "cannot open " + path.string() + ": " + std::strerror(errno);
+    return;
+  }
+
+  int rc = flock(fd, LOCK_EX | LOCK_NB);
+  if (rc != 0 && errno == EWOULDBLOCK && wait) {
+    std::fprintf(stderr,
+                 "ccbuild: waiting for another ccbuild in this directory "
+                 "to finish...\n");
+    do {
+      rc = flock(fd, LOCK_EX);
+    } while (rc != 0 && errno == EINTR);
+  }
+  if (rc != 0) {
+    error_ = (errno == EWOULDBLOCK)
+                 ? "another ccbuild is running in this directory"
+                 : "cannot lock " + path.string() + ": " + std::strerror(errno);
+    close(fd);
+    return;
+  }
+  fd_ = fd;
+}
+
+BuildLock::~BuildLock() {
+  if (fd_ >= 0) {
+    close(fd_);  // releases the lock
+  }
+}
+
 // -- Entry points --------------------------------------------------------
 
 int build_project(const Installation& installation) {
@@ -312,6 +352,11 @@ int build_project(const Installation& installation) {
   if (ec) {
     std::fprintf(stderr, "ccbuild: error: cannot create %s: %s\n",
                  std::string(layout::kBuildDir).c_str(), ec.message().c_str());
+    return 1;
+  }
+  const BuildLock lock(fs::path(layout::kLockPath), /*wait=*/true);
+  if (!lock.held()) {
+    std::fprintf(stderr, "ccbuild: error: %s\n", lock.error().c_str());
     return 1;
   }
 
