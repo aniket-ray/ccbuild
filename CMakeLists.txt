@@ -283,16 +283,16 @@ if (BUILD_TESTING)
                         COMMAND ${LCOV} --directory . --zerocounters
                         COMMAND $<TARGET_FILE:ccbuild_tests>
                         COMMAND ${LCOV} --directory . --capture --output-file coverage.info
-                        --rc branch_coverage=1 --ignore-errors mismatch,gcov
+                        --rc branch_coverage=1 --ignore-errors mismatch,gcov,inconsistent
                         COMMAND ${LCOV} --remove coverage.info
                         '*/ninja/*' '*/tests/*' '/usr/*' '*/_deps/*' '*/build.cc' '*/examples/*'
                         --output-file coverage.filtered.info
-                        --rc branch_coverage=1 --ignore-errors unused,mismatch,gcov
+                        --rc branch_coverage=1 --ignore-errors unused,mismatch,gcov,inconsistent
                         COMMAND ${GENHTML} coverage.filtered.info
                         --output-directory coverage-report
                         --branch-coverage
                         --title "ccbuild coverage"
-                        --ignore-errors mismatch
+                        --ignore-errors mismatch,inconsistent
                         COMMAND ${CMAKE_COMMAND} -E echo
                         "Coverage report: ${CMAKE_BINARY_DIR}/coverage-report/index.html"
                         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
