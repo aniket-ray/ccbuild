@@ -123,6 +123,29 @@ TEST(TargetTest, ObjectPathCppExtension) {
   EXPECT_EQ(app.object_path("main.cpp"), ".ccbuild/obj/myapp/main.o");
 }
 
+TEST(TargetTest, ObjectPathParentDirectoryStaysInsideTargetDir) {
+  Executable app("myapp", { "../shared/util.cc" });
+  EXPECT_EQ(app.object_path("../shared/util.cc"),
+            ".ccbuild/obj/myapp/__/shared/util.o");
+  EXPECT_EQ(app.object_path("../../x.cc"), ".ccbuild/obj/myapp/__/__/x.o");
+}
+
+TEST(TargetTest, ObjectPathAbsoluteSourceIsMadeRelative) {
+  Executable app("myapp", { "/opt/src/main.cc" });
+  EXPECT_EQ(app.object_path("/opt/src/main.cc"),
+            ".ccbuild/obj/myapp/opt/src/main.o");
+}
+
+TEST(TargetTest, ObjectPathIsNormalized) {
+  Executable app("myapp", { "./src/../main.cc" });
+  EXPECT_EQ(app.object_path("./src/../main.cc"), ".ccbuild/obj/myapp/main.o");
+}
+
+TEST(TargetTest, ObjectPathKeepsDotsInDirectoryNames) {
+  Executable app("myapp", { "v1.2/main.cc" });
+  EXPECT_EQ(app.object_path("v1.2/main.cc"), ".ccbuild/obj/myapp/v1.2/main.o");
+}
+
 TEST(TargetTest, ObjectPathCollisionDifferentDirs) {
   Executable app("myapp", { "src/net/socket.cc", "src/io/socket.cc" });
   auto netdir = app.object_path("src/net/socket.cc");

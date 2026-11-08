@@ -1,11 +1,16 @@
 #include "ccbuild/target.h"
 
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "internal/layout.h"
+
 namespace ccbuild {
+
+namespace fs = std::filesystem;
 
 // -- Construction --------------------------------------------------------
 
@@ -41,24 +46,17 @@ Target& Target::add_link_options(std::initializer_list<std::string> opts) {
 // -- Object Path ---------------------------------------------------------
 
 std::string Target::object_path(std::string_view source) const {
-  // Strip the file extension to get the stem.
-  const auto dot = source.rfind('.');
-  const auto stem =
-      (dot != std::string_view::npos) ? source.substr(0, dot) : source;
+  // Normalize the source path and make it relative, replacing any remaining
+  // ".." components so the result can never escape the target's object
+  // directory (e.g. "../lib/x.cc" -> "__/lib/x.o").
+  fs::path relative;
+  for (const auto& part : fs::path(source).lexically_normal().relative_path()) {
+    relative /= (part == "..") ? fs::path("__") : part;
+  }
+  relative.replace_extension(".o");
 
-  static constexpr std::string_view kObjPrefix = ".ccbuild/obj/";
-  static constexpr std::string_view kObjSuffix = ".o";
-
-  // Build path: .ccbuild/obj/<target_name>/<stem>.o
-  std::string result;
-  result.reserve(kObjPrefix.size() + name_.size() + 1 + stem.size() +
-                 kObjSuffix.size());
-  result += kObjPrefix;
-  result += name_;
-  result += '/';
-  result += stem;
-  result += kObjSuffix;
-  return result;
+  return (fs::path(internal::layout::kObjDir) / name_ / relative)
+      .generic_string();
 }
 
 // -- Include Directories -------------------------------------------------
