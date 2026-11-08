@@ -21,6 +21,7 @@
 #include "internal/compiler.h"
 #include "internal/layout.h"
 #include "internal/link_graph.h"
+#include "internal/process.h"
 #include "metrics.h"
 #include "state.h"
 #include "status_printer.h"
@@ -45,12 +46,13 @@ void append_fragment(std::string& out, std::string_view fragment) {
   out += fragment;
 }
 
-/// The compiler flags for `target`'s sources: -I for each include
-/// directory, then the compile options, inserted as written.
+/// The compiler flags for `target`'s sources.  Include directories are
+/// paths, so each is quoted into a single -I argument; compile options are
+/// shell syntax and are inserted as written (see Target::add_compile_options).
 std::string compile_flags(const Target& target) {
   std::string flags;
   for (const auto& dir : compile_include_dirs(target)) {
-    append_fragment(flags, "-I" + dir);
+    append_fragment(flags, shell_quote("-I" + dir));
   }
   for (const auto& option : target.compile_options()) {
     append_fragment(flags, option);
@@ -76,7 +78,7 @@ class GraphBuilder {
  public:
   GraphBuilder(State& state, const CompilerInfo& compiler, int cxx_standard)
       : state_(state) {
-    create_rules(compiler.path, cxx_standard);
+    create_rules(shell_quote(compiler.path), cxx_standard);
   }
 
   /// Add the compile edges and the final link/archive edge for `target`.
@@ -122,7 +124,8 @@ class GraphBuilder {
  private:
   using Bindings = std::vector<std::pair<std::string, std::string>>;
 
-  /// Register the three rules with the State.
+  /// Register the three rules with the State.  `compiler` is already
+  /// shell-quoted.
   void create_rules(const std::string& compiler, int cxx_standard) {
     const std::string std_flag = "-std=c++" + std::to_string(cxx_standard);
 

@@ -359,6 +359,35 @@ TEST_F(NinjaBridgeTest, LibraryLinkOptionsApplyToExecutables) {
 
 // -- Argument quoting ----------------------------------------------------
 
+TEST_F(NinjaBridgeTest, IncludeDirWithSpaces) {
+  write_file("my headers/value.h", "#define VALUE 0\n");
+  write_file("main.cc", "#include \"value.h\"\nint main() { return VALUE; }\n");
+
+  Project p("space_test");
+  p.add_executable("app", { "main.cc" })
+      .add_include_dirs({ "my headers" }, Visibility::Private);
+
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_EQ(run(".ccbuild/bin/app"), 0);
+}
+
+// Options are shell syntax: one string may hold several flags, command
+// substitution works, and shell quoting is honoured.
+TEST_F(NinjaBridgeTest, CompileOptionsAreShellSyntax) {
+  write_file("main.cc",
+             "static_assert(ONE + TWO + THREE == 6, \"flags\");\n"
+             "static_assert(sizeof(MSG) == 4, \"MSG is the string a b\");\n"
+             "int main() { return 0; }\n");
+
+  Project p("shell_syntax_test");
+  p.add_executable("app", { "main.cc" })
+      .add_compile_options(
+          { "-DONE=1 -DTWO=2", "$(echo -DTHREE=3)", "-DMSG='\"a b\"'" });
+
+  const auto result = build(p);
+  EXPECT_EQ(result.rc, 0) << result.out;
+}
+
 TEST_F(NinjaBridgeTest, LinkOptionsAreShellSyntax) {
   write_file("main.cc", "int main() { return 0; }\n");
 
