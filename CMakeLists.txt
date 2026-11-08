@@ -83,6 +83,7 @@ add_library(ccbuildlib STATIC
         src/core/target.cc
         src/internal/compiler.cc
         src/internal/ninja_bridge.cc
+        src/internal/plan_printer.cc
         src/internal/process.cc
         src/internal/validators.cc
 )
