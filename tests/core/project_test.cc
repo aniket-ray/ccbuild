@@ -3,21 +3,31 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
-#include <fstream>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "ccbuild/executable.h"
+#include "support/test_support.h"
 
 namespace ccbuild {
 namespace {
 
-struct TempFile {
-  std::string path;
-  explicit TempFile(std::string p) : path(std::move(p)) {}
-  ~TempFile() { std::filesystem::remove(path); }
-  TempFile(const TempFile&) = delete;
-  TempFile& operator=(const TempFile&) = delete;
+using test::TempDirTest;
+using test::write_file;
+
+/// Run a dry-run build, returning its exit code and captured stderr.
+struct BuildResult {
+  int rc;
+  std::string err;
 };
+BuildResult dry_run(Project& p) {
+  testing::internal::CaptureStdout();
+  testing::internal::CaptureStderr();
+  const int rc = p.build(/*dry_run=*/true);
+  testing::internal::GetCapturedStdout();
+  return { rc, testing::internal::GetCapturedStderr() };
+}
 
 // -- Default Settings ----------------------------------------------------
 
@@ -124,6 +134,67 @@ TEST(ProjectTest, BuildFailsOnInvalidSourceExtension) {
   EXPECT_NE(err.find("Makefile"), std::string::npos);
 }
 
+// -- Validation: Names, Standard, Object Paths ---------------------------
+
+TEST(ProjectTest, BuildFailsOnInvalidTargetName) {
+  Project p("test");
+  p.add_executable("../escape", { "main.cc" });
+
+  const auto [rc, err] = dry_run(p);
+  EXPECT_NE(rc, 0);
+  EXPECT_NE(err.find("invalid target name"), std::string::npos);
+}
+
+TEST(ProjectTest, BuildFailsOnUnsupportedStandard) {
+  Project p("test");
+  p.set_cxx_standard(21);
+  p.add_executable("app", { "main.cc" });
+
+  const auto [rc, err] = dry_run(p);
+  EXPECT_NE(rc, 0);
+  EXPECT_NE(err.find("unsupported C++ standard: 21"), std::string::npos);
+}
+
+TEST(ProjectTest, BuildAcceptsEverySupportedStandard) {
+  for (const int standard : { 98, 11, 14, 17, 20, 23, 26 }) {
+    Project p("test");
+    p.set_cxx_standard(standard);
+    p.add_executable("app", { "main.cc" });
+    EXPECT_EQ(dry_run(p).rc, 0) << "C++" << standard;
+  }
+}
+
+TEST(ProjectTest, BuildFailsOnDuplicateSource) {
+  Project p("test");
+  p.add_executable("app", { "main.cc", "main.cc" });
+
+  const auto [rc, err] = dry_run(p);
+  EXPECT_NE(rc, 0);
+  EXPECT_NE(err.find("more than once"), std::string::npos);
+}
+
+TEST(ProjectTest, BuildFailsOnObjectPathCollision) {
+  Project p("test");
+  p.add_executable("app", { "a.cc", "a.cpp" });
+
+  const auto [rc, err] = dry_run(p);
+  EXPECT_NE(rc, 0);
+  EXPECT_NE(err.find("both compile to"), std::string::npos);
+  EXPECT_NE(err.find(".ccbuild/obj/app/a.o"), std::string::npos);
+}
+
+TEST(ProjectTest, BuildFailsOnLinkToTargetOfAnotherProject) {
+  Project other("other");
+  auto& foreign = other.add_library("foreign", { "f.cc" });
+
+  Project p("test");
+  p.add_executable("app", { "main.cc" }).link(foreign);
+
+  const auto [rc, err] = dry_run(p);
+  EXPECT_NE(rc, 0);
+  EXPECT_NE(err.find("not part of this project"), std::string::npos);
+}
+
 // -- Validation: Executable Link Rules -----------------------------------
 
 TEST(ProjectTest, LinkingExeToExeThrows) {
@@ -187,7 +258,7 @@ TEST(ProjectTest, BuildFailsOnTransitiveLinkCycle) {
   std::string err = testing::internal::GetCapturedStderr();
 
   EXPECT_NE(rc, 0);
-  EXPECT_NE(err.find("link cycle"), std::string::npos);
+  EXPECT_NE(err.find("link cycle: a -> b -> c -> a"), std::string::npos);
 }
 
 TEST(ProjectTest, BuildSucceedsOnDiamondDag) {
@@ -285,16 +356,15 @@ TEST(ProjectTest, BuildOutputContainsPlanSummary) {
   EXPECT_NE(out.find("1 link"), std::string::npos);
 }
 
-TEST(ProjectTest, NonDryRunBuildSucceeds) {
-  TempFile src("prj_test_main.cc");
-  {
-    std::ofstream f(src.path);
-    ASSERT_TRUE(f.is_open());
-    f << "int main() { return 0; }\n";
-  }
+// -- Building ------------------------------------------------------------
+
+using ProjectBuildTest = TempDirTest;
+
+TEST_F(ProjectBuildTest, NonDryRunBuildSucceeds) {
+  write_file("main.cc", "int main() { return 0; }\n");
 
   Project p("test_project");
-  p.add_executable("app", { src.path });
+  p.add_executable("app", { "main.cc" });
 
   testing::internal::CaptureStdout();
   testing::internal::CaptureStderr();
@@ -304,6 +374,26 @@ TEST(ProjectTest, NonDryRunBuildSucceeds) {
 
   EXPECT_EQ(result, 0);
   EXPECT_TRUE(std::filesystem::exists(".ccbuild/bin/app"));
+}
+
+TEST_F(ProjectBuildTest, DryRunHasNoSideEffects) {
+  Project p("test_project");
+  p.add_executable("app", { "main.cc" });
+
+  EXPECT_EQ(dry_run(p).rc, 0);
+  EXPECT_FALSE(std::filesystem::exists(".ccbuild"));
+}
+
+TEST_F(ProjectBuildTest, ValidationFailureHasNoSideEffects) {
+  Project p("test_project");
+  p.add_executable("app", { "Makefile" });
+
+  testing::internal::CaptureStderr();
+  const int result = p.build(/*dry_run=*/false);
+  testing::internal::GetCapturedStderr();
+
+  EXPECT_NE(result, 0);
+  EXPECT_FALSE(std::filesystem::exists(".ccbuild"));
 }
 
 }  // namespace

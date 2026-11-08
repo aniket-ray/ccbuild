@@ -1,137 +1,84 @@
-#ifndef CCBUILD_VALIDATORS_H
-#define CCBUILD_VALIDATORS_H
+#ifndef CCBUILD_INTERNAL_VALIDATORS_H
+#define CCBUILD_INTERNAL_VALIDATORS_H
 
-#include <functional>
-#include <map>
 #include <memory>
 #include <optional>
-#include <set>
 #include <span>
 #include <string>
 #include <string_view>
 
 #include "ccbuild/target.h"
 
-namespace ccbuild::validators {
-
-/// Check whether a file path has a recognized C++ source extension.
+/// Checks run on a Project before any build work starts.
 ///
+/// Each check_* function returns std::nullopt when the project passes the
+/// check, or a human-readable error message (without the "ccbuild: error:"
+/// prefix) describing the first problem found.
+namespace ccbuild::internal::validators {
+
+/// The targets of a project, as stored by ccbuild::Project.
+using Targets = std::span<const std::unique_ptr<Target>>;
+
+/// nullopt on success, otherwise an error message.
+using Result = std::optional<std::string>;
+
+/// @name Predicates
+/// @{
+
+/// Whether a path has a recognized C++ source extension.
 /// Accepted extensions: .cc, .cpp, .cxx, .c++, .c, .C
-///
-/// @param path  A file path (need not exist on disk).
-/// @return true if the extension indicates a C++ source file.
-[[nodiscard]] inline bool is_cpp_source(std::string_view path) {
-  const auto dot = path.rfind('.');
-  if (dot == std::string_view::npos) {
-    return false;
-  }
-  const auto ext = path.substr(dot);
-  return ext == ".cc" || ext == ".cpp" || ext == ".cxx" || ext == ".c++" ||
-         ext == ".c" || ext == ".C";
-}
+[[nodiscard]] bool is_cpp_source(std::string_view path);
 
-/// Verify that every target in the project has a unique name.
-///
-/// @return nullopt if all names are unique, or an error message.
-[[nodiscard]] inline std::optional<std::string> check_duplicate_target_names(
-    std::span<const std::unique_ptr<Target>> targets) {
-  std::set<std::string_view> names;
-  for (const auto& t : targets) {
-    if (!names.insert(t->name()).second) {
-      return std::string("duplicate target name: '") + std::string(t->name()) +
-             "'";
-    }
-  }
-  return std::nullopt;
-}
+/// Whether a target name is valid: one or more of [A-Za-z0-9_.+-] (the
+/// same rule CMake applies), and not "." or "..".  Names become file names
+/// under .ccbuild/, so path separators and whitespace are rejected.
+[[nodiscard]] bool is_valid_target_name(std::string_view name);
 
-/// Verify that every target has at least one source file.
-///
-/// @return nullopt if all targets have sources, or an error message.
-[[nodiscard]] inline std::optional<std::string> check_targets_have_sources(
-    std::span<const std::unique_ptr<Target>> targets) {
-  for (const auto& t : targets) {
-    if (t->sources().empty()) {
-      return std::string("target '") + std::string(t->name()) +
-             "' has no sources";
-    }
-  }
-  return std::nullopt;
-}
+/// Whether `standard` is a C++ standard ccbuild can pass to the compiler
+/// as -std=c++<standard>: 98, 11, 14, 17, 20, 23 or 26.
+[[nodiscard]] bool is_supported_cxx_standard(int standard);
 
-/// Verify that every source file has a recognized C++ extension.
-///
-/// @return nullopt if all sources have valid extensions, or an error message.
-[[nodiscard]] inline std::optional<std::string> check_source_extensions(
-    std::span<const std::unique_ptr<Target>> targets) {
-  for (const auto& t : targets) {
-    for (const auto& src : t->sources()) {
-      if (!is_cpp_source(src)) {
-        return std::string("target '") + std::string(t->name()) +
-               "' has invalid source file: '" + src +
-               "' (expected .cc, .cpp, .cxx, .c++, .c, or .C)";
-      }
-    }
-  }
-  return std::nullopt;
-}
+/// @}
 
-/// Verify that no executable links against another executable.
-///
-/// @return nullopt if all links are valid, or an error message.
-[[nodiscard]] inline std::optional<std::string> check_no_exe_links_exe(
-    std::span<const std::unique_ptr<Target>> targets) {
-  for (const auto& t : targets) {
-    for (const Target& dep : t->link_deps()) {
-      if (dep.kind() == TargetKind::Executable) {
-        return std::string("target '") + std::string(t->name()) +
-               "' links against executable '" + std::string(dep.name()) +
-               "' (can only link against libraries)";
-      }
-    }
-  }
-  return std::nullopt;
-}
+/// @name Individual checks
+/// @{
 
-/// Verify that the link-dependency graph contains no cycles.
-///
-/// Uses three-colour depth-first search (white/grey/black).
-///
-/// @return nullopt if the graph is a DAG, or an error message.
-[[nodiscard]] inline std::optional<std::string> check_no_link_cycles(
-    std::span<const std::unique_ptr<Target>> targets) {
-  enum class Mark { none, in_stack, done };
-  std::map<std::string_view, Mark, std::less<>> marks;
+/// Every target name satisfies is_valid_target_name().
+[[nodiscard]] Result check_target_names(Targets targets);
 
-  std::function<std::optional<std::string>(const Target&)> visit =
-      [&](const Target& t) -> std::optional<std::string> {
-    marks[t.name()] = Mark::in_stack;
-    for (const Target& dep : t.link_deps()) {
-      if (marks[dep.name()] == Mark::in_stack) {
-        return std::string("link cycle involving '") + std::string(t.name()) +
-               "' and '" + std::string(dep.name()) + "'";
-      }
-      if (marks[dep.name()] == Mark::none) {
-        if (auto err = visit(dep)) {
-          return err;
-        }
-      }
-    }
-    marks[t.name()] = Mark::done;
-    return std::nullopt;
-  };
+/// No two targets share a name.
+[[nodiscard]] Result check_duplicate_target_names(Targets targets);
 
-  for (const auto& t : targets) {
-    if (marks[t->name()] == Mark::none) {
-      if (auto err = visit(*t)) {
-        return err;
-      }
-    }
-  }
+/// The project's C++ standard is supported.
+[[nodiscard]] Result check_cxx_standard(int standard);
 
-  return std::nullopt;
-}
+/// Every target has at least one source file.
+[[nodiscard]] Result check_targets_have_sources(Targets targets);
 
-}  // namespace ccbuild::validators
+/// Every source file has a recognized C++ extension.
+[[nodiscard]] Result check_source_extensions(Targets targets);
 
-#endif  // CCBUILD_VALIDATORS_H
+/// Within each target, no two sources map to the same object file
+/// (e.g. a source listed twice, or "a.cc" next to "a.cpp").
+[[nodiscard]] Result check_unique_object_paths(Targets targets);
+
+/// Every link dependency is a target owned by the same project.
+[[nodiscard]] Result check_link_deps_in_project(Targets targets);
+
+/// No target links against an executable.
+[[nodiscard]] Result check_no_exe_links_exe(Targets targets);
+
+/// The link-dependency graph is acyclic.  The error names the cycle,
+/// e.g. "link cycle: a -> b -> a".
+[[nodiscard]] Result check_no_link_cycles(Targets targets);
+
+/// @}
+
+/// Run every check above, in a fixed order, and return the first error.
+/// Later checks may assume earlier ones passed (e.g. the cycle check relies
+/// on all link dependencies belonging to the project).
+[[nodiscard]] Result check_all(int cxx_standard, Targets targets);
+
+}  // namespace ccbuild::internal::validators
+
+#endif  // CCBUILD_INTERNAL_VALIDATORS_H

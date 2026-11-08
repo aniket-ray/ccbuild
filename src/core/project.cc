@@ -43,17 +43,7 @@ StaticLibrary& Project::add_library(
 // -- Validation ----------------------------------------------------------
 
 std::optional<std::string> Project::validate() const {
-  if (auto err = validators::check_duplicate_target_names(targets_))
-    return err;
-  if (auto err = validators::check_targets_have_sources(targets_))
-    return err;
-  if (auto err = validators::check_source_extensions(targets_))
-    return err;
-  if (auto err = validators::check_no_exe_links_exe(targets_))
-    return err;
-  if (auto err = validators::check_no_link_cycles(targets_))
-    return err;
-  return std::nullopt;
+  return internal::validators::check_all(standard_, targets_);
 }
 
 // -- Build Execution -----------------------------------------------------

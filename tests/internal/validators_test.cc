@@ -12,6 +12,26 @@
 namespace ccbuild {
 namespace {
 
+namespace validators = internal::validators;
+
+using Targets = std::vector<std::unique_ptr<Target>>;
+
+Executable& add_exe(Targets& targets, std::string name,
+                    std::vector<std::string> sources) {
+  auto t = std::make_unique<Executable>(name, std::move(sources));
+  auto& ref = *t;
+  targets.push_back(std::move(t));
+  return ref;
+}
+
+StaticLibrary& add_lib(Targets& targets, std::string name,
+                       std::vector<std::string> sources) {
+  auto t = std::make_unique<StaticLibrary>(name, std::move(sources));
+  auto& ref = *t;
+  targets.push_back(std::move(t));
+  return ref;
+}
+
 // -- is_cpp_source -------------------------------------------------------
 
 TEST(IsCppSourceTest, RejectsNoExtension) {
@@ -273,6 +293,157 @@ TEST(CheckNoLinkCyclesTest, RecursiveVisitBeforeOuterLoop) {
 
   auto err = validators::check_no_link_cycles(targets);
   EXPECT_FALSE(err.has_value());
+}
+
+// -- is_valid_target_name -----------------------------------------------
+
+TEST(IsValidTargetNameTest, AcceptsCMakeStyleNames) {
+  for (const char* name : { "app", "my_lib", "lib-2", "a.b", "c++", "X9" }) {
+    EXPECT_TRUE(validators::is_valid_target_name(name)) << name;
+  }
+}
+
+TEST(IsValidTargetNameTest, RejectsPathsAndSpecialNames) {
+  for (const char* name :
+       { "", ".", "..", "a/b", "../x", "a b", "a\\b", "a\tb", "a$b", "a;b" }) {
+    EXPECT_FALSE(validators::is_valid_target_name(name)) << name;
+  }
+}
+
+TEST(CheckTargetNamesTest, InvalidNameReturnsError) {
+  Targets targets;
+  add_exe(targets, "ok", { "a.cc" });
+  add_exe(targets, "not/ok", { "b.cc" });
+
+  auto err = validators::check_target_names(targets);
+  ASSERT_TRUE(err.has_value());
+  EXPECT_NE(err->find("invalid target name 'not/ok'"), std::string::npos);
+}
+
+// -- check_cxx_standard --------------------------------------------------
+
+TEST(CheckCxxStandardTest, SupportedStandards) {
+  for (const int standard : { 98, 11, 14, 17, 20, 23, 26 }) {
+    EXPECT_TRUE(validators::is_supported_cxx_standard(standard)) << standard;
+    EXPECT_FALSE(validators::check_cxx_standard(standard).has_value());
+  }
+}
+
+TEST(CheckCxxStandardTest, UnsupportedStandards) {
+  for (const int standard : { 0, 3, 21, 2020, -17 }) {
+    auto err = validators::check_cxx_standard(standard);
+    ASSERT_TRUE(err.has_value()) << standard;
+    EXPECT_NE(err->find("unsupported C++ standard"), std::string::npos);
+  }
+}
+
+// -- check_unique_object_paths -------------------------------------------
+
+TEST(CheckUniqueObjectPathsTest, DistinctSourcesReturnNullopt) {
+  Targets targets;
+  add_exe(targets, "app", { "a.cc", "src/a.cc", "b.cpp" });
+  EXPECT_FALSE(validators::check_unique_object_paths(targets).has_value());
+}
+
+TEST(CheckUniqueObjectPathsTest, SameSourceInDifferentTargetsIsFine) {
+  Targets targets;
+  add_exe(targets, "app1", { "main.cc" });
+  add_exe(targets, "app2", { "main.cc" });
+  EXPECT_FALSE(validators::check_unique_object_paths(targets).has_value());
+}
+
+TEST(CheckUniqueObjectPathsTest, RepeatedSourceReturnsError) {
+  Targets targets;
+  add_exe(targets, "app", { "a.cc", "a.cc" });
+
+  auto err = validators::check_unique_object_paths(targets);
+  ASSERT_TRUE(err.has_value());
+  EXPECT_NE(err->find("lists source 'a.cc' more than once"), std::string::npos);
+}
+
+TEST(CheckUniqueObjectPathsTest, ExtensionCollisionReturnsError) {
+  Targets targets;
+  add_exe(targets, "app", { "a.cc", "a.cpp" });
+
+  auto err = validators::check_unique_object_paths(targets);
+  ASSERT_TRUE(err.has_value());
+  EXPECT_NE(err->find("'a.cc' and 'a.cpp'"), std::string::npos);
+}
+
+TEST(CheckUniqueObjectPathsTest, EquivalentSpellingsCollide) {
+  Targets targets;
+  add_exe(targets, "app", { "src/a.cc", "./src/a.cc" });
+  EXPECT_TRUE(validators::check_unique_object_paths(targets).has_value());
+}
+
+// -- check_link_deps_in_project ------------------------------------------
+
+TEST(CheckLinkDepsInProjectTest, OwnedDepsReturnNullopt) {
+  Targets targets;
+  auto& lib = add_lib(targets, "lib", { "lib.cc" });
+  add_exe(targets, "app", { "main.cc" }).link(lib);
+  EXPECT_FALSE(validators::check_link_deps_in_project(targets).has_value());
+}
+
+TEST(CheckLinkDepsInProjectTest, ForeignDepReturnsError) {
+  StaticLibrary foreign("foreign", { "f.cc" });
+  Targets targets;
+  add_exe(targets, "app", { "main.cc" }).link(foreign);
+
+  auto err = validators::check_link_deps_in_project(targets);
+  ASSERT_TRUE(err.has_value());
+  EXPECT_NE(err->find("'app' links 'foreign'"), std::string::npos);
+}
+
+// -- check_no_link_cycles: error message ---------------------------------
+
+TEST(CheckNoLinkCyclesTest, ErrorNamesTheCycle) {
+  Targets targets;
+  auto& root = add_lib(targets, "root", { "r.cc" });
+  auto& a = add_lib(targets, "a", { "a.cc" });
+  auto& b = add_lib(targets, "b", { "b.cc" });
+  root.link(a);
+  a.link(b);
+  b.link(a);
+
+  auto err = validators::check_no_link_cycles(targets);
+  ASSERT_TRUE(err.has_value());
+  // Only the cycle itself is reported, not the path leading to it.
+  EXPECT_EQ(*err, "link cycle: a -> b -> a");
+}
+
+TEST(CheckNoLinkCyclesTest, SelfLoopMessage) {
+  Targets targets;
+  auto& a = add_lib(targets, "a", { "a.cc" });
+  a.link(a);
+
+  auto err = validators::check_no_link_cycles(targets);
+  ASSERT_TRUE(err.has_value());
+  EXPECT_EQ(*err, "link cycle: a -> a");
+}
+
+// -- check_all -----------------------------------------------------------
+
+TEST(CheckAllTest, ValidProjectReturnsNullopt) {
+  Targets targets;
+  auto& lib = add_lib(targets, "lib", { "lib.cc" });
+  add_exe(targets, "app", { "main.cc" }).link(lib);
+  EXPECT_FALSE(validators::check_all(20, targets).has_value());
+}
+
+TEST(CheckAllTest, ReportsFirstFailingCheck) {
+  Targets targets;
+  add_exe(targets, "a b", {});  // invalid name and no sources
+
+  auto err = validators::check_all(20, targets);
+  ASSERT_TRUE(err.has_value());
+  EXPECT_NE(err->find("invalid target name"), std::string::npos);
+}
+
+TEST(CheckAllTest, ChecksStandard) {
+  Targets targets;
+  add_exe(targets, "app", { "main.cc" });
+  EXPECT_TRUE(validators::check_all(19, targets).has_value());
 }
 
 }  // namespace

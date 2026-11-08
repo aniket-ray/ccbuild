@@ -65,6 +65,7 @@ int main() {
                                       "src/internal/compiler.cc",
                                       "src/internal/ninja_bridge.cc",
                                       "src/internal/process.cc",
+                                      "src/internal/validators.cc",
                                   });
   ccbuildlib.add_include_dirs({ "include", "ninja/src", "src" },
                               ccbuild::Visibility::Private);
