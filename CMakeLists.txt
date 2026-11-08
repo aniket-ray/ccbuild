@@ -1,5 +1,6 @@
 # 3.16 is required by googletest (fetched for the tests).
 cmake_minimum_required(VERSION 3.16)
+
 # The version is defined once, in include/ccbuild/version.h.
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/ccbuild/version.h"
         _ccbuild_version_line
@@ -11,15 +12,29 @@ endif ()
 
 project(ccbuild VERSION ${CCBUILD_VERSION} LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# code coverage (-DCCBUILD_COVERAGE=ON)
-# Flags applied per-target (ccbuildlib, ninjacore, ccbuild_tests) so that the
-# ccbuild CLI binary and the libraries it ships for end-user linking are NOT
-# polluted with profiler runtime references.
-option(CCBUILD_COVERAGE "Enable code coverage instrumentation" OFF)
+# -- options -----------------------------------------------------------------
+
+option(CCBUILD_COVERAGE "Instrument ccbuild and its tests for code coverage" OFF)
+option(CCBUILD_WARNINGS_AS_ERRORS "Treat warnings in ccbuild's own code as errors" OFF)
+option(CCBUILD_CLANG_TIDY "Run clang-tidy on ccbuild's own sources while compiling" OFF)
+set(CCBUILD_SANITIZERS "" CACHE STRING
+        "Sanitizers to build everything with, e.g. 'address,undefined' (empty: none)")
+
+# Sanitizers must instrument every translation unit (including ninja and
+# googletest), so they are applied globally.
+if (CCBUILD_SANITIZERS)
+    message(STATUS "Sanitizers enabled: ${CCBUILD_SANITIZERS}")
+    add_compile_options(-fsanitize=${CCBUILD_SANITIZERS} -fno-omit-frame-pointer
+            -fno-sanitize-recover=all)
+    add_link_options(-fsanitize=${CCBUILD_SANITIZERS})
+endif ()
+
+# Coverage flags are applied per target (ccbuild's own targets, ninjacore and
+# the tests) rather than globally, so googletest is not instrumented.
 if (CCBUILD_COVERAGE)
     message(STATUS "Code coverage enabled")
     if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
@@ -35,7 +50,37 @@ if (CCBUILD_COVERAGE)
     endif ()
 endif ()
 
-# ninja core - static library from ninja submodule (POSIX/Linux)
+if (CCBUILD_CLANG_TIDY)
+    find_program(CCBUILD_CLANG_TIDY_EXE NAMES clang-tidy)
+    if (NOT CCBUILD_CLANG_TIDY_EXE)
+        message(FATAL_ERROR "CCBUILD_CLANG_TIDY is ON but clang-tidy was not found")
+    endif ()
+endif ()
+
+# Settings shared by every target built from ccbuild's own sources.
+function(ccbuild_configure_target target)
+    target_compile_options(${target} PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
+            -Wold-style-cast -Woverloaded-virtual -Wnull-dereference
+            -Wformat=2 -Wimplicit-fallthrough)
+    if (CCBUILD_WARNINGS_AS_ERRORS)
+        target_compile_options(${target} PRIVATE -Werror)
+    endif ()
+    if (CCBUILD_COVERAGE)
+        target_compile_options(${target} PRIVATE ${CCBUILD_COVERAGE_COMPILE_FLAGS})
+        target_link_options(${target} PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
+    endif ()
+    if (CCBUILD_CLANG_TIDY)
+        set_target_properties(${target} PROPERTIES CXX_CLANG_TIDY "${CCBUILD_CLANG_TIDY_EXE}")
+    endif ()
+endfunction()
+
+# -- ninjacore: Ninja's build engine (from the ninja submodule) -------------
+
+if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ninja/src/build.cc")
+    message(FATAL_ERROR "The ninja submodule is missing. Run: git submodule update --init")
+endif ()
+
 add_library(ninjacore STATIC
         ninja/src/build_log.cc
         ninja/src/build.cc
@@ -69,22 +114,25 @@ add_library(ninjacore STATIC
         ninja/src/util.cc
         ninja/src/version.cc
 )
-
-target_include_directories(ninjacore PUBLIC ninja/src)
+# Third-party code: build it quietly, and expose its headers as system
+# headers so they do not trigger warnings in ccbuild's stricter build.
+target_include_directories(ninjacore PRIVATE ninja/src)
+target_include_directories(ninjacore SYSTEM INTERFACE ninja/src)
 target_compile_options(ninjacore PRIVATE -w)
 if (CCBUILD_COVERAGE)
     target_compile_options(ninjacore PRIVATE ${CCBUILD_COVERAGE_COMPILE_FLAGS})
     target_link_options(ninjacore PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
 endif ()
 
-# ninja uses ppoll on Linux when available
+# Ninja uses ppoll on Linux when available.
 include(CheckCXXSymbolExists)
 check_cxx_symbol_exists(ppoll poll.h HAVE_PPOLL)
 if (HAVE_PPOLL)
     target_compile_definitions(ninjacore PRIVATE USE_PPOLL=1)
 endif ()
 
-# ccbuild library
+# -- ccbuildlib: the library build scripts link against ---------------------
+
 add_library(ccbuildlib STATIC
         src/core/executable.cc
         src/core/project.cc
@@ -97,18 +145,13 @@ add_library(ccbuildlib STATIC
         src/internal/process.cc
         src/internal/validators.cc
 )
-
 target_include_directories(ccbuildlib
         PUBLIC include
-        PUBLIC ninja/src
         PRIVATE src
 )
 target_compile_features(ccbuildlib PUBLIC cxx_std_20)
 target_link_libraries(ccbuildlib PUBLIC ninjacore)
-if (CCBUILD_COVERAGE)
-    target_compile_options(ccbuildlib PRIVATE ${CCBUILD_COVERAGE_COMPILE_FLAGS})
-    target_link_options(ccbuildlib PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
-endif ()
+ccbuild_configure_target(ccbuildlib)
 
 # -- ccbuild: the command-line driver ---------------------------------------
 
@@ -128,27 +171,33 @@ target_compile_definitions(ccbuildcli PRIVATE
         CCBUILD_HOST_CXX="${CMAKE_CXX_COMPILER}"
 )
 # Instrumented libraries need the matching runtime in every runner.
+set(_ccbuild_runner_flags "")
 if (CCBUILD_COVERAGE)
-    target_compile_definitions(ccbuildcli PRIVATE
-            CCBUILD_RUNNER_FLAGS="${CCBUILD_COVERAGE_LINK_FLAGS}")
-    target_compile_options(ccbuildcli PRIVATE ${CCBUILD_COVERAGE_COMPILE_FLAGS})
-    target_link_options(ccbuildcli PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
+    list(APPEND _ccbuild_runner_flags ${CCBUILD_COVERAGE_LINK_FLAGS})
 endif ()
+if (CCBUILD_SANITIZERS)
+    list(APPEND _ccbuild_runner_flags -fsanitize=${CCBUILD_SANITIZERS})
+endif ()
+if (_ccbuild_runner_flags)
+    list(JOIN _ccbuild_runner_flags " " _ccbuild_runner_flags)
+    target_compile_definitions(ccbuildcli PRIVATE
+            CCBUILD_RUNNER_FLAGS="${_ccbuild_runner_flags}")
+endif ()
+ccbuild_configure_target(ccbuildcli)
 
 add_executable(ccbuild src/cli/main.cc)
 target_include_directories(ccbuild PRIVATE src)
 target_link_libraries(ccbuild PRIVATE ccbuildcli)
-if (CCBUILD_COVERAGE)
-    target_link_options(ccbuild PRIVATE ${CCBUILD_COVERAGE_LINK_FLAGS})
-endif ()
+ccbuild_configure_target(ccbuild)
 
-# -- install rules ------------------------------------------------------
+# -- install rules ------------------------------------------------------------
 
 install(TARGETS ccbuild RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS ccbuildlib ninjacore ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY include/ccbuild DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-# -- tests -------------------------------------------------------------
+# -- tests --------------------------------------------------------------------
+
 include(CTest)
 if (BUILD_TESTING)
     include(FetchContent)
@@ -175,7 +224,6 @@ if (BUILD_TESTING)
             tests/internal/process_test.cc
             tests/internal/validators_test.cc
     )
-
     target_include_directories(ccbuild_tests PRIVATE src tests)
     target_link_libraries(ccbuild_tests PRIVATE ccbuildcli GTest::gtest_main)
     # Let the driver tests compile real build scripts against this build
@@ -256,6 +304,3 @@ if (BUILD_TESTING)
         endif ()
     endif ()
 endif ()
-
-
-

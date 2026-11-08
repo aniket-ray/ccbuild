@@ -1,21 +1,51 @@
 ---
-Checks: '
-  ,readability-avoid-const-params-in-decls,
-  ,readability-inconsistent-declaration-parameter-name,
-  ,readability-non-const-parameter,
-  ,readability-redundant-string-cstr,
-  ,readability-redundant-string-init,
-  ,readability-simplify-boolean-expr,
-  ,cppcoreguidelines-pro-type-cstyle-cast,
-  ,bugprone-assignment-in-if-condition,
-'
-WarningsAsErrors: '
-  ,readability-avoid-const-params-in-decls,
-  ,readability-inconsistent-declaration-parameter-name,
-  ,readability-non-const-parameter,
-  ,readability-redundant-string-cstr,
-  ,readability-redundant-string-init,
-  ,readability-simplify-boolean-expr,
-  ,cppcoreguidelines-pro-type-cstyle-cast,
-  ,bugprone-assignment-in-if-condition,
-'
+# clang-tidy configuration for ccbuild's own sources (src/, include/).
+# Third-party code (ninja/, googletest) is excluded via HeaderFilterRegex and
+# by only running clang-tidy on ccbuild's translation units.
+#
+# Run locally:  cmake -B build -DCCBUILD_CLANG_TIDY=ON && cmake --build build
+#
+# Disabled checks worth explaining (YAML comments cannot go inside Checks):
+#   concurrency-mt-unsafe        getenv/strerror/strsignal are only called
+#                                from single-threaded code.
+#   misc-no-recursion            the link graph is walked recursively.
+#   readability-trailing-comma   layout is clang-format's job.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  concurrency-*,
+  -concurrency-mt-unsafe,
+  cppcoreguidelines-missing-std-forward,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  cppcoreguidelines-rvalue-reference-param-not-moved,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-special-member-functions,
+  cppcoreguidelines-virtual-class-destructor,
+  misc-*,
+  -misc-include-cleaner,
+  -misc-no-recursion,
+  -misc-non-private-member-variables-in-classes,
+  -misc-use-internal-linkage,
+  modernize-*,
+  -modernize-use-designated-initializers,
+  -modernize-use-nodiscard,
+  -modernize-use-trailing-return-type,
+  performance-*,
+  -performance-enum-size,
+  portability-*,
+  readability-*,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-trailing-comma,
+  -readability-uppercase-literal-suffix,
+WarningsAsErrors: '*'
+HeaderFilterRegex: '(include/ccbuild|/src/(cli|core|internal))/'
+CheckOptions:
+  - key: readability-function-cognitive-complexity.Threshold
+    value: '25'
+  - key: misc-const-correctness.WarnPointersAsValues
+    value: 'false'
+  - key: cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor
+    value: 'true'

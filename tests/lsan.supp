@@ -1,0 +1,20 @@
+# LeakSanitizer suppressions for the ccbuild test suite.
+#
+# Ninja's State, Node and DepsLog allocate graph nodes, edges and dependency
+# records with `new` and never free them: the ninja binary performs one build
+# and exits, so these live for the whole process by design.  ccbuild's tests
+# run many builds in one process, which LeakSanitizer reports.  Only
+# allocations made inside these Ninja functions are suppressed; leaks in
+# ccbuild's own code are still reported.
+#
+# Usage: LSAN_OPTIONS=suppressions=tests/lsan.supp ctest ...
+leak:State::AddEdge
+leak:State::AddIn
+leak:State::AddOut
+leak:State::GetNode
+leak:Node::Node
+leak:Node::AddOutEdge
+leak:DepsLog::Deps::Deps
+leak:DepsLog::RecordDeps
+leak:DepsLog::Load
+leak:ImplicitDepLoader::LoadDepsFromLog

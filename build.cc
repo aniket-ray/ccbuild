@@ -4,6 +4,8 @@
 /// After the initial CMake bootstrap, running `ccbuild` in the repo root
 /// compiles and executes this script via the cached runner.
 ///
+/// Keep the source lists in sync with CMakeLists.txt.
+///
 /// Targets:
 ///   - ninjacore:  static library from the ninja submodule
 ///   - ccbuildlib: static library from ccbuild's own source
@@ -11,9 +13,9 @@
 
 #include <ccbuild/ccbuild.h>
 
-#include <thread>
-
 int main() {
+  using ccbuild::Visibility;
+
   ccbuild::Project p("ccbuild");
   p.set_cxx_standard(20);
 
@@ -52,8 +54,11 @@ int main() {
                                      "ninja/src/util.cc",
                                      "ninja/src/version.cc",
                                  });
-  ninjacore.add_include_dirs({ "ninja/src" }, ccbuild::Visibility::Private);
+  ninjacore.add_include_dirs({ "ninja/src" }, Visibility::Private);
   ninjacore.add_compile_options({ "-w" });
+#ifdef __linux__
+  ninjacore.add_compile_options({ "-DUSE_PPOLL=1" });
+#endif
 
   // -- ccbuildlib: ccbuild core (static library) -------------------------
   auto& ccbuildlib =
@@ -69,16 +74,21 @@ int main() {
                                       "src/internal/process.cc",
                                       "src/internal/validators.cc",
                                   });
-  ccbuildlib.add_include_dirs({ "include", "ninja/src", "src" },
-                              ccbuild::Visibility::Private);
+  ccbuildlib.add_include_dirs({ "include" }, Visibility::Public);
+  ccbuildlib.add_include_dirs({ "src" }, Visibility::Private);
+  // Ninja's headers are third-party: include them as system headers so
+  // they do not trigger warnings (CMakeLists.txt does the same).
+  ccbuildlib.add_compile_options(
+      { "-isystem", "ninja/src", "-Wall", "-Wextra", "-Wpedantic" });
   ccbuildlib.link(ninjacore);
 
   // -- ccbuild: CLI executable -------------------------------------------
   auto& cli =
       p.add_executable("ccbuild", { "src/cli/main.cc", "src/cli/driver.cc" });
-  cli.add_include_dirs({ "include", "src" }, ccbuild::Visibility::Private);
-  cli.link(ccbuildlib).link(ninjacore);
+  cli.add_include_dirs({ "src" }, Visibility::Private);
+  cli.add_compile_options({ "-Wall", "-Wextra", "-Wpedantic" });
   cli.add_link_options({ "-lpthread" });
+  cli.link(ccbuildlib);
 
   return p.build();
 }
