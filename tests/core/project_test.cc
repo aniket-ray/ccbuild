@@ -59,6 +59,30 @@ TEST(ProjectTest, AddLibraryReturnsReference) {
   EXPECT_EQ(lib.kind(), TargetKind::StaticLibrary);
 }
 
+TEST(ProjectTest, AddExecutableFromVector) {
+  Project p("test");
+  const std::vector<std::string> sources = { "main.cc", "util.cc" };
+  auto& exe = p.add_executable("myapp", sources);
+  ASSERT_EQ(exe.sources().size(), 2u);
+  EXPECT_EQ(exe.sources()[1], "util.cc");
+}
+
+TEST(ProjectTest, AddLibraryFromStringViews) {
+  Project p("test");
+  auto& lib =
+      p.add_library("mylib", std::vector<std::string_view>{ "a.cc", "b.cc" });
+  EXPECT_EQ(lib.sources().size(), 2u);
+}
+
+TEST(ProjectTest, TargetReferencesStayValidAsTargetsAreAdded) {
+  Project p("test");
+  auto& first = p.add_library("first", { "a.cc" });
+  for (int i = 0; i < 100; ++i) {
+    p.add_library("lib" + std::to_string(i), { "x.cc" });
+  }
+  EXPECT_EQ(first.name(), "first");
+}
+
 // -- Basic Build ---------------------------------------------------------
 
 TEST(ProjectTest, BuildSucceedsOnValidProject) {

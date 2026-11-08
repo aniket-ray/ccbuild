@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "internal/layout.h"
@@ -29,20 +30,6 @@ Target& Target::link(Target& dep) {
   return *this;
 }
 
-// -- Compile Options -----------------------------------------------------
-
-Target& Target::add_compile_options(std::initializer_list<std::string> opts) {
-  compile_options_.insert(compile_options_.end(), opts.begin(), opts.end());
-  return *this;
-}
-
-// -- Link Options --------------------------------------------------------
-
-Target& Target::add_link_options(std::initializer_list<std::string> opts) {
-  link_options_.insert(link_options_.end(), opts.begin(), opts.end());
-  return *this;
-}
-
 // -- Object Path ---------------------------------------------------------
 
 std::string Target::object_path(std::string_view source) const {
@@ -61,23 +48,16 @@ std::string Target::object_path(std::string_view source) const {
 
 // -- Include Directories -------------------------------------------------
 
-Target& Target::add_include_dirs(std::initializer_list<std::string> dirs,
-                                 Visibility vis) {
-  // Select the appropriate include directory vector for the given visibility.
-  auto& target = [this, vis]() -> std::vector<std::string>& {
-    switch (vis) {
-    case Visibility::Private:
-      return private_include_dirs_;
-    case Visibility::Public:
-      return public_include_dirs_;
-    case Visibility::Interface:
-      return interface_include_dirs_;
-    }
+std::vector<std::string>& Target::include_dirs_for(Visibility vis) {
+  switch (vis) {
+  case Visibility::Private:
+    return private_include_dirs_;
+  case Visibility::Public:
     return public_include_dirs_;
-  }();
-
-  target.insert(target.end(), dirs.begin(), dirs.end());
-  return *this;
+  case Visibility::Interface:
+    return interface_include_dirs_;
+  }
+  throw std::invalid_argument("invalid Visibility value");
 }
 
 std::span<const std::string> Target::include_dirs(Visibility vis) const {

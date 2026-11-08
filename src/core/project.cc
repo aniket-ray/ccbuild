@@ -1,8 +1,12 @@
 #include "ccbuild/project.h"
 
 #include <cstdio>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "internal/ninja_bridge.h"
 #include "internal/plan_printer.h"
@@ -22,22 +26,20 @@ void Project::set_cxx_standard(int cxx_standard) {
 
 // -- Target Registration -------------------------------------------------
 
-Executable& Project::add_executable(
-    std::string_view name, std::initializer_list<std::string> sources) {
-  auto target =
-      std::make_unique<Executable>(name, std::vector<std::string>(sources));
-  auto* ptr = target.get();
+Executable& Project::emplace_executable(std::string_view name,
+                                        std::vector<std::string> sources) {
+  auto target = std::make_unique<Executable>(name, std::move(sources));
+  Executable& ref = *target;
   targets_.push_back(std::move(target));
-  return *ptr;
+  return ref;
 }
 
-StaticLibrary& Project::add_library(
-    std::string_view name, std::initializer_list<std::string> sources) {
-  auto target =
-      std::make_unique<StaticLibrary>(name, std::vector<std::string>(sources));
-  auto* ptr = target.get();
+StaticLibrary& Project::emplace_library(std::string_view name,
+                                        std::vector<std::string> sources) {
+  auto target = std::make_unique<StaticLibrary>(name, std::move(sources));
+  StaticLibrary& ref = *target;
   targets_.push_back(std::move(target));
-  return *ptr;
+  return ref;
 }
 
 // -- Validation ----------------------------------------------------------
@@ -49,7 +51,6 @@ std::optional<std::string> Project::validate() const {
 // -- Build Execution -----------------------------------------------------
 
 int Project::build(bool dry_run) {
-  // Validate before doing any work.
   if (auto err = validate()) {
     std::fprintf(stderr, "ccbuild: error: %s\n", err->c_str());
     return 1;

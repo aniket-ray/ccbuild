@@ -3,16 +3,16 @@
 
 #include <functional>
 #include <initializer_list>
+#include <iterator>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "ccbuild/types.h"
 
 namespace ccbuild {
-
-class NinjaBridge;
 
 /// Abstract base for all build targets (executables, static libraries, etc.).
 ///
@@ -20,11 +20,20 @@ class NinjaBridge;
 /// and include directories.  The fluent API returns Target& from every
 /// mutator so that callers can chain configuration calls.
 ///
+/// Every list-taking mutator accepts either a brace-enclosed list
+/// (`{"-Wall", "-O2"}`) or any StringRange (e.g. a std::vector<std::string>
+/// computed at runtime).
+///
 /// Targets are non-copyable and non-movable -- the Project owns them
 /// via std::unique_ptr<Target> and exposes them by reference.
 class Target {
  public:
   virtual ~Target() = default;
+
+  Target(const Target&) = delete;
+  Target& operator=(const Target&) = delete;
+  Target(Target&&) = delete;
+  Target& operator=(Target&&) = delete;
 
   /// @name Identity
   /// @{
@@ -49,21 +58,16 @@ class Target {
     return sources_;
   }
 
-  /// Append sources from any range of string-convertible elements
-  /// (std::vector<std::string>, std::vector<std::string_view>, etc.).
-  ///
-  /// Constrained by the SourceRange concept (types.h).
-  template <SourceRange R>
-  Target& add_sources(R&& range) {
-    for (auto&& source : range) {
-      sources_.emplace_back(std::forward<decltype(source)>(source));
-    }
-    return *this;
+  /// Append source files.
+  Target& add_sources(std::initializer_list<std::string> sources) {
+    return add_sources(
+        std::span<const std::string>(sources.begin(), sources.size()));
   }
 
-  /// Overload for brace-enclosed initializer lists.
-  Target& add_sources(std::initializer_list<std::string> sources) {
-    sources_.insert(sources_.end(), sources.begin(), sources.end());
+  /// @copydoc add_sources(std::initializer_list<std::string>)
+  template <StringRange R>
+  Target& add_sources(R&& sources) {
+    append(sources_, std::forward<R>(sources));
     return *this;
   }
 
@@ -76,7 +80,8 @@ class Target {
   ///
   /// Only library targets may be linked against; linking an executable
   /// throws std::invalid_argument.  The dependency is stored by reference --
-  /// the caller must ensure the referred target outlives this one.
+  /// the caller must ensure the referred target outlives this one, and it
+  /// must belong to the same Project (checked when the project is built).
   Target& link(Target& dep);
 
   /// All direct link dependencies, in the order they were added.
@@ -90,9 +95,25 @@ class Target {
   /// @name Compile Options
   /// @{
 
-  /// Add compiler flags (e.g. "-Wall", "-O2") that apply to every
-  /// source file in this target.
-  Target& add_compile_options(std::initializer_list<std::string> opts);
+  /// Add compiler flags (e.g. "-Wall", "-O2") that apply to every source
+  /// file in this target.
+  ///
+  /// Options are shell syntax: each one is inserted into the compile
+  /// command as written and interpreted by /bin/sh.  One element may hold
+  /// several flags ("-O2 -g"), command substitution works
+  /// ("$(pkg-config --cflags zlib)"), and characters special to the shell
+  /// must be quoted for it ("-DGREETING='\"hi there\"'").
+  Target& add_compile_options(std::initializer_list<std::string> opts) {
+    return add_compile_options(
+        std::span<const std::string>(opts.begin(), opts.size()));
+  }
+
+  /// @copydoc add_compile_options(std::initializer_list<std::string>)
+  template <StringRange R>
+  Target& add_compile_options(R&& opts) {
+    append(compile_options_, std::forward<R>(opts));
+    return *this;
+  }
 
   /// All compile options in the order they were added.
   [[nodiscard]] std::span<const std::string> compile_options() const {
@@ -106,13 +127,27 @@ class Target {
 
   /// Add include directories at the given Visibility level.
   ///
+  /// Directories are paths, not shell syntax: each becomes exactly one -I
+  /// argument, so names with spaces or other special characters just work.
+  ///
   /// Visibility semantics:
   ///   - Private:   used when compiling this target only.
-  ///   - Public:    used when compiling this target and anything that links it.
-  ///   - Interface: used only by targets that link this one (not by this target
-  ///     itself).  Useful for header-only libraries.
+  ///   - Public:    used when compiling this target and anything that links
+  ///                it (directly or transitively).
+  ///   - Interface: used only by targets that link this one (not by this
+  ///                target itself).  Useful for header-only libraries.
   Target& add_include_dirs(std::initializer_list<std::string> dirs,
-                           Visibility vis);
+                           Visibility vis) {
+    return add_include_dirs(
+        std::span<const std::string>(dirs.begin(), dirs.size()), vis);
+  }
+
+  /// @copydoc add_include_dirs(std::initializer_list<std::string>,Visibility)
+  template <StringRange R>
+  Target& add_include_dirs(R&& dirs, Visibility vis) {
+    append(include_dirs_for(vis), std::forward<R>(dirs));
+    return *this;
+  }
 
   /// Retrieve include directories for a given visibility level.
   [[nodiscard]] std::span<const std::string> include_dirs(Visibility vis) const;
@@ -123,7 +158,24 @@ class Target {
   /// @{
 
   /// Add flags passed to the linker (e.g. "-lpthread", "-ldl").
-  Target& add_link_options(std::initializer_list<std::string> opts);
+  ///
+  /// Link options are placed after all object files and libraries on the
+  /// link command line, so `-l` libraries resolve symbols correctly.  On a
+  /// static library they describe what its consumers must link against:
+  /// they are applied to every executable that links the library, directly
+  /// or transitively (they are never passed to `ar`).  Like compile options
+  /// they are shell syntax ("$(pkg-config --libs zlib)" works).
+  Target& add_link_options(std::initializer_list<std::string> opts) {
+    return add_link_options(
+        std::span<const std::string>(opts.begin(), opts.size()));
+  }
+
+  /// @copydoc add_link_options(std::initializer_list<std::string>)
+  template <StringRange R>
+  Target& add_link_options(R&& opts) {
+    append(link_options_, std::forward<R>(opts));
+    return *this;
+  }
 
   /// All link options in the order they were added.
   [[nodiscard]] std::span<const std::string> link_options() const {
@@ -137,17 +189,13 @@ class Target {
 
   /// Compute the object file path for a given source file.
   ///
-  /// Output: .ccbuild/obj/<target_name>/<stem>.o
-  /// (the stem is the source path with its extension stripped).
+  /// Output: .ccbuild/obj/<target_name>/<source path with extension .o>.
+  /// The source path is normalized first; `..` components become `__` and
+  /// absolute paths are made relative, so the object file always lands
+  /// inside this target's object directory.
   [[nodiscard]] std::string object_path(std::string_view source) const;
 
   /// @}
-
-  /// Targets are non-copyable and non-movable.
-  /// The Project owns them via unique_ptr; external code works through
-  /// references.
-  Target(const Target&) = delete;
-  Target& operator=(const Target&) = delete;
 
  protected:
   /// Construct a target with a name and initial source list.
@@ -155,7 +203,23 @@ class Target {
   Target(std::string_view name, std::vector<std::string> sources);
 
  private:
-  friend class NinjaBridge;
+  /// Append every element of `range` to `out`, converting to std::string.
+  ///
+  /// The elements are collected first because `range` may be a view of
+  /// `out` itself (e.g. `t.add_sources(t.sources())`), which appending in
+  /// place would invalidate.
+  template <StringRange R>
+  static void append(std::vector<std::string>& out, R&& range) {
+    std::vector<std::string> items;
+    for (auto&& item : std::forward<R>(range)) {
+      items.emplace_back(std::forward<decltype(item)>(item));
+    }
+    out.insert(out.end(), std::make_move_iterator(items.begin()),
+               std::make_move_iterator(items.end()));
+  }
+
+  /// The include directory list that stores directories of visibility `vis`.
+  std::vector<std::string>& include_dirs_for(Visibility vis);
 
   std::string name_;
   std::vector<std::string> sources_;

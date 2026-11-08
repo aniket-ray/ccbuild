@@ -1,10 +1,15 @@
 #include <gtest/gtest.h>
 
+#include <array>
+#include <list>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ccbuild/executable.h"
 #include "ccbuild/static_library.h"
+#include "ccbuild/types.h"
 
 namespace ccbuild {
 namespace {
@@ -45,6 +50,56 @@ TEST(TargetTest, AddSourcesFromVector) {
   ASSERT_EQ(t.sources().size(), 3u);
   EXPECT_EQ(t.sources()[0], "a.cc");
 }
+
+TEST(TargetTest, AddSourcesFromStringViews) {
+  Executable t("myapp", {});
+  const std::vector<std::string_view> sources = { "a.cc", "b.cc" };
+  t.add_sources(sources);
+  ASSERT_EQ(t.sources().size(), 2u);
+  EXPECT_EQ(t.sources()[1], "b.cc");
+}
+
+TEST(TargetTest, AddSourcesFromCStringArray) {
+  Executable t("myapp", {});
+  constexpr std::array<const char*, 2> kSources = { "a.cc", "b.cc" };
+  t.add_sources(kSources);
+  EXPECT_EQ(t.sources().size(), 2u);
+}
+
+TEST(TargetTest, AddSourcesFromMovedVector) {
+  Executable t("myapp", {});
+  std::vector<std::string> sources = { "a.cc" };
+  t.add_sources(std::move(sources));
+  ASSERT_EQ(t.sources().size(), 1u);
+  EXPECT_EQ(t.sources()[0], "a.cc");
+}
+
+TEST(TargetTest, AppendingATargetsOwnListIsSafe) {
+  // The span returned by sources() aliases the vector being appended to.
+  Executable t("myapp", {});
+  for (int i = 0; i < 8; ++i) {
+    t.add_sources({ "s" + std::to_string(i) + ".cc" });
+  }
+  t.add_sources(t.sources());
+  ASSERT_EQ(t.sources().size(), 16u);
+  EXPECT_EQ(t.sources()[8], "s0.cc");
+  EXPECT_EQ(t.sources()[15], "s7.cc");
+
+  t.add_compile_options({ "-Wall", "-O2" });
+  t.add_compile_options(t.compile_options());
+  EXPECT_EQ(t.compile_options().size(), 4u);
+}
+
+// -- StringRange concept -------------------------------------------------
+
+static_assert(StringRange<std::vector<std::string>>);
+static_assert(StringRange<const std::vector<std::string>&>);
+static_assert(StringRange<std::vector<std::string_view>>);
+static_assert(StringRange<std::list<std::string>>);
+static_assert(StringRange<std::array<const char*, 3>>);
+static_assert(!StringRange<std::vector<int>>);
+static_assert(!StringRange<std::string>);  // a string is not a list of them
+static_assert(SourceRange<std::vector<std::string>>);  // compatibility alias
 
 // -- link ----------------------------------------------------------------
 
@@ -93,6 +148,25 @@ TEST(TargetTest, AddCompileOptionsAccumulates) {
   app.add_compile_options({ "-Wall" });
   app.add_compile_options({ "-O2", "-g" });
   EXPECT_EQ(app.compile_options().size(), 3u);
+}
+
+TEST(TargetTest, AddCompileOptionsFromVector) {
+  Executable app("myapp", { "main.cc" });
+  const std::vector<std::string> opts = { "-Wall", "-O2" };
+  app.add_compile_options(opts);
+  ASSERT_EQ(app.compile_options().size(), 2u);
+  EXPECT_EQ(app.compile_options()[1], "-O2");
+}
+
+// -- add_link_options ----------------------------------------------------
+
+TEST(TargetTest, AddLinkOptions) {
+  Executable app("myapp", { "main.cc" });
+  app.add_link_options({ "-lpthread" });
+  app.add_link_options(std::vector<std::string_view>{ "-ldl" });
+  ASSERT_EQ(app.link_options().size(), 2u);
+  EXPECT_EQ(app.link_options()[0], "-lpthread");
+  EXPECT_EQ(app.link_options()[1], "-ldl");
 }
 
 // -- object_path ---------------------------------------------------------
@@ -203,6 +277,14 @@ TEST(TargetTest, AddIncludeDirsAccumulates) {
   t.add_include_dirs({ "a" }, Visibility::Private);
   t.add_include_dirs({ "b" }, Visibility::Private);
   EXPECT_EQ(t.include_dirs(Visibility::Private).size(), 2u);
+}
+
+TEST(TargetTest, AddIncludeDirsFromVector) {
+  Executable t("myapp", { "main.cc" });
+  const std::vector<std::string> dirs = { "a", "b" };
+  t.add_include_dirs(dirs, Visibility::Public);
+  EXPECT_EQ(t.include_dirs(Visibility::Public).size(), 2u);
+  EXPECT_TRUE(t.include_dirs(Visibility::Private).empty());
 }
 
 TEST(TargetTest, AddIncludeDirsMultipleVisibilities) {
