@@ -261,7 +261,9 @@ int NinjaBridge::build(const Project& project) {
 
   // 2. Build the Ninja graph.  Libraries first, so their archive nodes
   //    exist (with their producing edges) before executables reference them.
+  //    $builddir tells Ninja where to keep its own files (e.g. .ninja_lock).
   State state;
+  state.bindings_.AddBinding("builddir", std::string(layout::kBuildDir));
   GraphBuilder graph(state, *compiler, project.standard());
   std::vector<Node*> outputs;
   std::string err;
