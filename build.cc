@@ -33,7 +33,6 @@ int main() {
                                      "ninja/src/edit_distance.cc",
                                      "ninja/src/elide_middle.cc",
                                      "ninja/src/eval_env.cc",
-                                     "ninja/src/explanations.cc",
                                      "ninja/src/graph.cc",
                                      "ninja/src/graphviz.cc",
                                      "ninja/src/jobserver.cc",
