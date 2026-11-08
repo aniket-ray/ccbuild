@@ -82,6 +82,7 @@ add_library(ccbuildlib STATIC
         src/core/static_library.cc
         src/core/target.cc
         src/internal/compiler.cc
+        src/internal/link_graph.cc
         src/internal/ninja_bridge.cc
         src/internal/plan_printer.cc
         src/internal/process.cc
@@ -148,6 +149,7 @@ if (BUILD_TESTING)
             tests/core/static_library_test.cc
             tests/core/target_test.cc
             tests/internal/compiler_test.cc
+            tests/internal/link_graph_test.cc
             tests/internal/ninja_bridge_test.cc
             tests/internal/process_test.cc
             tests/internal/validators_test.cc

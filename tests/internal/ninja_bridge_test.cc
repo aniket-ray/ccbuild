@@ -2,453 +2,308 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <filesystem>
-#include <fstream>
 #include <string>
-#include <system_error>
+#include <vector>
 
 #include "ccbuild/project.h"
+#include "internal/process.h"
+#include "support/test_support.h"
 
-namespace ccbuild {
-namespace internal {
+namespace ccbuild::internal {
 namespace {
 
-// -- RAII helpers ---------------------------------------------------------
+namespace fs = std::filesystem;
+using test::write_file;
 
-struct TempFile {
-  std::string path;
-  explicit TempFile(std::string p) : path(std::move(p)) {}
-  ~TempFile() { std::filesystem::remove(path); }
-  TempFile(const TempFile&) = delete;
-  TempFile& operator=(const TempFile&) = delete;
+/// Output of a NinjaBridge::build() run.
+struct BuildOutput {
+  int rc = 0;
+  std::string out;
+  std::string err;
+
+  [[nodiscard]] bool mentions_error() const {
+    return out.find("error") != std::string::npos ||
+           err.find("error") != std::string::npos;
+  }
 };
 
-struct TempDir {
-  std::filesystem::path path;
-  explicit TempDir(std::filesystem::path p) : path(std::move(p)) {
-    std::filesystem::create_directories(path);
-  }
-  ~TempDir() {
-    std::error_code ec;
-    std::filesystem::remove_all(path, ec);
-  }
-  TempDir(const TempDir&) = delete;
-  TempDir& operator=(const TempDir&) = delete;
-};
-
-// -- Fixture --------------------------------------------------------------
-
-class NinjaBridgeTest : public ::testing::Test {
+/// Every test runs in its own empty temporary directory.
+class NinjaBridgeTest : public test::TempDirTest {
  protected:
-  void SetUp() override {
-    std::filesystem::remove_all(".ccbuild");
-
-    std::error_code ec;
-    for (const auto& entry : std::filesystem::directory_iterator(".", ec)) {
-      if (ec)
-        break;
-      const auto& p = entry.path();
-      const auto name = p.filename().string();
-      bool is_test_file = (name.find("_nb_test_") == 0) ||
-                          (name == "ninja_bridge_test_dummy.cc") ||
-                          (name == "ninja_bridge_test_lib.cc") ||
-                          (name == "ninja_bridge_test_main.cc");
-      if (is_test_file) {
-        std::filesystem::remove_all(p, ec);
-      }
-      ec.clear();
-    }
+  static BuildOutput build(const Project& p) {
+    testing::internal::CaptureStdout();
+    testing::internal::CaptureStderr();
+    BuildOutput result;
+    result.rc = NinjaBridge::build(p);
+    result.out = testing::internal::GetCapturedStdout();
+    result.err = testing::internal::GetCapturedStderr();
+    return result;
   }
 
-  void TearDown() override { std::filesystem::remove_all(".ccbuild"); }
+  /// Run a built executable and return its exit code.
+  static int run(const std::string& path) {
+    return run_process(std::vector<std::string>{ path }).shell_exit_code();
+  }
 };
+
+// -- Basic builds --------------------------------------------------------
 
 TEST_F(NinjaBridgeTest, EmptyProjectSucceeds) {
   const Project p("empty_project");
 
-  testing::internal::CaptureStdout();
-  const int result = NinjaBridge::build(p);
-  const std::string out = testing::internal::GetCapturedStdout();
-
-  EXPECT_EQ(result, 0);
-  EXPECT_NE(out.find("nothing to do"), std::string::npos);
+  const auto result = build(p);
+  EXPECT_EQ(result.rc, 0);
+  EXPECT_NE(result.out.find("nothing to do"), std::string::npos);
 }
 
 TEST_F(NinjaBridgeTest, BuildFailsOnMissingSource) {
   Project p("missing_src_project");
   p.add_executable("app", { "does_not_exist.cc" });
 
-  testing::internal::CaptureStderr();
-  testing::internal::CaptureStdout();
-  const int result = NinjaBridge::build(p);
-  const std::string out = testing::internal::GetCapturedStdout();
-  const std::string err = testing::internal::GetCapturedStderr();
-
-  EXPECT_NE(result, 0);
-  bool has_error = (out.find("error") != std::string::npos) ||
-                   (err.find("error") != std::string::npos);
-  EXPECT_TRUE(has_error);
+  const auto result = build(p);
+  EXPECT_NE(result.rc, 0);
+  EXPECT_TRUE(result.mentions_error());
 }
 
 TEST_F(NinjaBridgeTest, BuildSucceedsWithValidSource) {
-  const std::string src_file = "ninja_bridge_test_dummy.cc";
-
-  {
-    std::ofstream f(src_file);
-    ASSERT_TRUE(f.is_open());
-    f << "int main() { return 0; }\n";
-  }
+  write_file("main.cc", "int main() { return 0; }\n");
 
   Project p("dummy_project");
-  p.add_executable("dummy_app", { src_file });
+  p.add_executable("dummy_app", { "main.cc" });
 
-  testing::internal::CaptureStdout();
-  testing::internal::CaptureStderr();
-  const int result = NinjaBridge::build(p);
-  testing::internal::GetCapturedStdout();
-  testing::internal::GetCapturedStderr();
-
-  EXPECT_EQ(result, 0);
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/bin/dummy_app"));
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_TRUE(fs::exists(".ccbuild/bin/dummy_app"));
+  EXPECT_EQ(run(".ccbuild/bin/dummy_app"), 0);
 }
 
 TEST_F(NinjaBridgeTest, BuildSucceedsWithComplexGraph) {
-  const std::string lib_src = "ninja_bridge_test_lib.cc";
-  const std::string main_src = "ninja_bridge_test_main.cc";
-
-  {
-    std::ofstream f(lib_src);
-    ASSERT_TRUE(f.is_open());
-    f << "int the_answer() { return 42; }\n";
-  }
-  {
-    std::ofstream f(main_src);
-    ASSERT_TRUE(f.is_open());
-    f << "int the_answer();\n"
-         "int main() { return the_answer() == 42 ? 0 : 1; }\n";
-  }
+  write_file("lib.cc", "int the_answer() { return 42; }\n");
+  write_file("main.cc",
+             "int the_answer();\n"
+             "int main() { return the_answer() == 42 ? 0 : 1; }\n");
 
   Project p("complex_project");
-
-  auto& lib = p.add_library("my_lib", { lib_src });
+  auto& lib = p.add_library("my_lib", { "lib.cc" });
   lib.add_include_dirs({ "include" }, Visibility::Public);
   lib.add_include_dirs({ "src" }, Visibility::Private);
   lib.add_compile_options({ "-DTEST_DEFINE" });
 
-  auto& app = p.add_executable("my_app", { main_src });
+  auto& app = p.add_executable("my_app", { "main.cc" });
   app.link(lib);
   app.add_link_options({ "-O0" });
   app.add_include_dirs({ "app_include" }, Visibility::Interface);
 
-  testing::internal::CaptureStdout();
-  testing::internal::CaptureStderr();
-  const int result = NinjaBridge::build(p);
-  testing::internal::GetCapturedStdout();
-  testing::internal::GetCapturedStderr();
-
-  EXPECT_EQ(result, 0);
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/bin/my_app"));
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/lib/libmy_lib.a"));
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_TRUE(fs::exists(".ccbuild/lib/libmy_lib.a"));
+  EXPECT_EQ(run(".ccbuild/bin/my_app"), 0);
 }
 
 TEST_F(NinjaBridgeTest, LibraryWithLinkOptionsBuildsCorrectly) {
-  TempFile src("_nb_test_ar_src.cc");
-  {
-    std::ofstream f(src.path);
-    f << "int func() { return 1; }\n";
-  }
+  write_file("lib.cc", "int func() { return 1; }\n");
 
   Project p("ar_test");
-  auto& lib = p.add_library("my_lib", { src.path });
+  auto& lib = p.add_library("my_lib", { "lib.cc" });
   lib.add_link_options({ "-s" });
 
-  testing::internal::CaptureStdout();
-  testing::internal::CaptureStderr();
-  const int result = NinjaBridge::build(p);
-  testing::internal::GetCapturedStdout();
-  testing::internal::GetCapturedStderr();
-
-  EXPECT_EQ(result, 0);
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/lib/libmy_lib.a"));
-}
-
-TEST_F(NinjaBridgeTest, InterfaceIncludeDirsPropagateToLinker) {
-  TempDir inc("_nb_test_iface_inc");
-  TempFile lib_src("_nb_test_iface_lib.cc");
-  TempFile exe_src("_nb_test_iface_exe.cc");
-
-  {
-    std::ofstream f((inc.path / "util.h").string());
-    f << "#pragma once\ninline int util() { return 99; }\n";
-  }
-  {
-    std::ofstream f(lib_src.path);
-    f << "int lib_func() { return 1; }\n";
-  }
-  {
-    std::ofstream f(exe_src.path);
-    f << "#include \"util.h\"\n"
-         "int lib_func();\n"
-         "int main() { return lib_func() + util() == 100 ? 0 : 1; }\n";
-  }
-
-  Project p("iface_test");
-  auto& lib = p.add_library("mylib", { lib_src.path });
-  lib.add_include_dirs({ inc.path.string() }, Visibility::Interface);
-  auto& app = p.add_executable("myapp", { exe_src.path });
-  app.link(lib);
-
-  testing::internal::CaptureStdout();
-  testing::internal::CaptureStderr();
-  const int result = NinjaBridge::build(p);
-  testing::internal::GetCapturedStdout();
-  testing::internal::GetCapturedStderr();
-
-  EXPECT_EQ(result, 0);
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/bin/myapp"));
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_TRUE(fs::exists(".ccbuild/lib/libmy_lib.a"));
 }
 
 TEST_F(NinjaBridgeTest, SecondBuildAlreadyUpToDate) {
-  TempFile src("_nb_test_uptodate.cc");
-  {
-    std::ofstream f(src.path);
-    f << "int main() { return 0; }\n";
-  }
+  write_file("main.cc", "int main() { return 0; }\n");
 
   Project p("uptodate_test");
-  p.add_executable("app", { src.path });
+  p.add_executable("app", { "main.cc" });
 
-  {
-    testing::internal::CaptureStdout();
-    testing::internal::CaptureStderr();
-    const int result = NinjaBridge::build(p);
-    testing::internal::GetCapturedStdout();
-    testing::internal::GetCapturedStderr();
-    EXPECT_EQ(result, 0);
-  }
+  EXPECT_EQ(build(p).rc, 0);
+  const auto second = build(p);
+  EXPECT_EQ(second.rc, 0);
+  EXPECT_NE(second.out.find("nothing to do"), std::string::npos);
+}
 
-  testing::internal::CaptureStdout();
-  const int result = NinjaBridge::build(p);
-  const std::string out = testing::internal::GetCapturedStdout();
+TEST_F(NinjaBridgeTest, HeaderChangeTriggersRebuild) {
+  write_file("value.h", "#define VALUE 1\n");
+  write_file("main.cc", "#include \"value.h\"\nint main() { return VALUE; }\n");
 
-  EXPECT_EQ(result, 0);
-  EXPECT_NE(out.find("nothing to do"), std::string::npos);
+  Project p("header_dep_test");
+  p.add_executable("app", { "main.cc" });
+
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_EQ(run(".ccbuild/bin/app"), 1);
+
+  // Bump the header's mtime so the change is visible even on filesystems
+  // with coarse timestamps.
+  write_file("value.h", "#define VALUE 7\n");
+  fs::last_write_time("value.h",
+                      fs::last_write_time("value.h") + std::chrono::seconds(2));
+
+  const auto second = build(p);
+  EXPECT_EQ(second.rc, 0);
+  EXPECT_EQ(second.out.find("nothing to do"), std::string::npos);
+  EXPECT_EQ(run(".ccbuild/bin/app"), 7);
 }
 
 TEST_F(NinjaBridgeTest, BuildFailsOnCompilationError) {
-  TempFile src("_nb_test_comperr.cc");
-  {
-    std::ofstream f(src.path);
-    f << "int main() { return 1 }\n";
-  }
+  write_file("main.cc", "int main() { return 1 }\n");
 
   Project p("comperr_test");
-  p.add_executable("app", { src.path });
+  p.add_executable("app", { "main.cc" });
 
-  testing::internal::CaptureStderr();
-  testing::internal::CaptureStdout();
-  const int result = NinjaBridge::build(p);
-  const std::string out = testing::internal::GetCapturedStdout();
-  const std::string err = testing::internal::GetCapturedStderr();
-
-  EXPECT_NE(result, 0);
-  bool has_error = (out.find("error") != std::string::npos) ||
-                   (err.find("error") != std::string::npos);
-  EXPECT_TRUE(has_error);
+  const auto result = build(p);
+  EXPECT_NE(result.rc, 0);
+  EXPECT_TRUE(result.mentions_error());
 }
 
 TEST_F(NinjaBridgeTest, SourceInSubdirectoryBuildsCorrectObject) {
-  TempDir src_dir("_nb_test_src");
-  TempFile src((src_dir.path / "main.cc").string());
-
-  {
-    std::ofstream f(src.path);
-    f << "int main() { return 0; }\n";
-  }
+  write_file("src/main.cc", "int main() { return 0; }\n");
 
   Project p("subdir_test");
-  p.add_executable("app", { src.path });
+  p.add_executable("app", { "src/main.cc" });
 
-  testing::internal::CaptureStdout();
-  testing::internal::CaptureStderr();
-  const int result = NinjaBridge::build(p);
-  testing::internal::GetCapturedStdout();
-  testing::internal::GetCapturedStderr();
-
-  EXPECT_EQ(result, 0);
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/obj/app/_nb_test_src/main.o"));
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_TRUE(fs::exists(".ccbuild/obj/app/src/main.o"));
 }
 
-TEST_F(NinjaBridgeTest, MultiDepthTransitiveIncludes) {
-  TempDir inc_a("_nb_test_inc_a");
-  TempDir inc_b("_nb_test_inc_b");
-  TempFile liba_src("_nb_test_trans_a.cc");
-  TempFile libb_src("_nb_test_trans_b.cc");
-  TempFile exe_src("_nb_test_trans_exe.cc");
+TEST_F(NinjaBridgeTest, SourceOutsideProjectStaysInsideBuildDir) {
+  fs::create_directories("project");
+  write_file("shared/main.cc", "int main() { return 0; }\n");
+  const test::ScopedCurrentDir in_project("project");
 
-  {
-    std::ofstream f((inc_a.path / "a.h").string());
-    f << "#pragma once\nint func_a();\n";
-  }
-  {
-    std::ofstream f((inc_b.path / "b.h").string());
-    f << "#pragma once\nint func_b();\n";
-  }
-  {
-    std::ofstream f(liba_src.path);
-    f << "int func_a() { return 1; }\n";
-  }
-  {
-    std::ofstream f(libb_src.path);
-    f << "#include \"a.h\"\n"
-         "#include \"b.h\"\n"
-         "int func_b() { return func_a() + 1; }\n";
-  }
-  {
-    std::ofstream f(exe_src.path);
-    f << "#include \"b.h\"\n"
-         "int main() { return func_b() == 2 ? 0 : 1; }\n";
-  }
+  Project p("outside_test");
+  p.add_executable("app", { "../shared/main.cc" });
 
-  Project p("trans_test");
-  auto& liba = p.add_library("liba", { liba_src.path });
-  liba.add_include_dirs({ inc_a.path.string() }, Visibility::Public);
-
-  auto& libb = p.add_library("libb", { libb_src.path });
-  libb.add_include_dirs({ inc_b.path.string() }, Visibility::Public);
-  libb.link(liba);
-
-  auto& app = p.add_executable("app", { exe_src.path });
-  app.link(libb);
-
-  testing::internal::CaptureStdout();
-  testing::internal::CaptureStderr();
-  const int result = NinjaBridge::build(p);
-  testing::internal::GetCapturedStdout();
-  testing::internal::GetCapturedStderr();
-
-  EXPECT_EQ(result, 0);
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/bin/app"));
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/lib/libliba.a"));
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/lib/liblibb.a"));
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_TRUE(fs::exists(".ccbuild/obj/app/__/shared/main.o"));
+  EXPECT_FALSE(fs::exists("../shared/main.o"));
 }
 
 TEST_F(NinjaBridgeTest, TwoExecutablesBuildBoth) {
-  TempFile src1("_nb_test_two_1.cc");
-  TempFile src2("_nb_test_two_2.cc");
-
-  {
-    std::ofstream f(src1.path);
-    f << "int main() { return 0; }\n";
-  }
-  {
-    std::ofstream f(src2.path);
-    f << "int main() { return 1; }\n";
-  }
+  write_file("one.cc", "int main() { return 0; }\n");
+  write_file("two.cc", "int main() { return 1; }\n");
 
   Project p("two_exe_test");
-  p.add_executable("app1", { src1.path });
-  p.add_executable("app2", { src2.path });
+  p.add_executable("app1", { "one.cc" });
+  p.add_executable("app2", { "two.cc" });
 
-  testing::internal::CaptureStdout();
-  testing::internal::CaptureStderr();
-  const int result = NinjaBridge::build(p);
-  testing::internal::GetCapturedStdout();
-  testing::internal::GetCapturedStderr();
-
-  EXPECT_EQ(result, 0);
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/bin/app1"));
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/bin/app2"));
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_EQ(run(".ccbuild/bin/app1"), 0);
+  EXPECT_EQ(run(".ccbuild/bin/app2"), 1);
 }
 
 TEST_F(NinjaBridgeTest, MultipleLinkOptionsSeparation) {
-  TempFile src("_nb_test_mlo.cc");
-  {
-    std::ofstream f(src.path);
-    f << "int main() { return 0; }\n";
-  }
+  write_file("main.cc", "int main() { return 0; }\n");
 
   Project p("mlo_test");
-  auto& app = p.add_executable("app", { src.path });
+  auto& app = p.add_executable("app", { "main.cc" });
   app.add_link_options({ "-s", "-v" });
 
-  testing::internal::CaptureStdout();
-  testing::internal::CaptureStderr();
-  const int result = NinjaBridge::build(p);
-  testing::internal::GetCapturedStdout();
-  testing::internal::GetCapturedStderr();
-
-  EXPECT_EQ(result, 0);
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/bin/app"));
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_TRUE(fs::exists(".ccbuild/bin/app"));
 }
 
 TEST_F(NinjaBridgeTest, CompileOptionsWithoutIncludeDirs) {
-  TempFile src("_nb_test_co.cc");
-  {
-    std::ofstream f(src.path);
-    f << "int main() { return 0; }\n";
-  }
+  write_file("main.cc", "int main() { return 0; }\n");
 
   Project p("co_test");
-  auto& app = p.add_executable("app", { src.path });
+  auto& app = p.add_executable("app", { "main.cc" });
   app.add_compile_options({ "-Wall", "-Wextra" });
 
-  testing::internal::CaptureStdout();
-  testing::internal::CaptureStderr();
-  const int result = NinjaBridge::build(p);
-  testing::internal::GetCapturedStdout();
-  testing::internal::GetCapturedStderr();
-
-  EXPECT_EQ(result, 0);
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/bin/app"));
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_TRUE(fs::exists(".ccbuild/bin/app"));
 }
 
-TEST_F(NinjaBridgeTest, DuplicateTransitiveLinkDeps) {
-  TempFile base_src("_nb_test_dup_base.cc");
-  TempFile mid1_src("_nb_test_dup_mid1.cc");
-  TempFile mid2_src("_nb_test_dup_mid2.cc");
-  TempFile exe_src("_nb_test_dup_exe.cc");
+// -- Include directory propagation ---------------------------------------
 
-  {
-    std::ofstream f(base_src.path);
-    f << "int base_func() { return 1; }\n";
-  }
-  {
-    std::ofstream f(mid1_src.path);
-    f << "int base_func();\n"
-         "int mid1_func() { return base_func() + 1; }\n";
-  }
-  {
-    std::ofstream f(mid2_src.path);
-    f << "int base_func();\n"
-         "int mid2_func() { return base_func() + 2; }\n";
-  }
-  {
-    std::ofstream f(exe_src.path);
-    f << "int mid1_func();\n"
-         "int mid2_func();\n"
-         "int main() { return (mid1_func() + mid2_func()) == 5 ? 0 : 1; }\n";
-  }
+TEST_F(NinjaBridgeTest, InterfaceIncludeDirsPropagateToLinker) {
+  write_file("iface_inc/util.h",
+             "#pragma once\ninline int util() { return 99; }\n");
+  write_file("lib.cc", "int lib_func() { return 1; }\n");
+  write_file("main.cc",
+             "#include \"util.h\"\n"
+             "int lib_func();\n"
+             "int main() { return lib_func() + util() == 100 ? 0 : 1; }\n");
+
+  Project p("iface_test");
+  auto& lib = p.add_library("mylib", { "lib.cc" });
+  lib.add_include_dirs({ "iface_inc" }, Visibility::Interface);
+  auto& app = p.add_executable("myapp", { "main.cc" });
+  app.link(lib);
+
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_EQ(run(".ccbuild/bin/myapp"), 0);
+}
+
+TEST_F(NinjaBridgeTest, MultiDepthTransitiveIncludes) {
+  write_file("inc_a/a.h", "#pragma once\nint func_a();\n");
+  write_file("inc_b/b.h", "#pragma once\nint func_b();\n");
+  write_file("a.cc", "int func_a() { return 1; }\n");
+  write_file("b.cc",
+             "#include \"a.h\"\n"
+             "#include \"b.h\"\n"
+             "int func_b() { return func_a() + 1; }\n");
+  write_file("main.cc",
+             "#include \"b.h\"\n"
+             "int main() { return func_b() == 2 ? 0 : 1; }\n");
+
+  Project p("trans_test");
+  auto& liba = p.add_library("liba", { "a.cc" });
+  liba.add_include_dirs({ "inc_a" }, Visibility::Public);
+
+  auto& libb = p.add_library("libb", { "b.cc" });
+  libb.add_include_dirs({ "inc_b" }, Visibility::Public);
+  libb.link(liba);
+
+  auto& app = p.add_executable("app", { "main.cc" });
+  app.link(libb);
+
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_TRUE(fs::exists(".ccbuild/lib/libliba.a"));
+  EXPECT_TRUE(fs::exists(".ccbuild/lib/liblibb.a"));
+  EXPECT_EQ(run(".ccbuild/bin/app"), 0);
+}
+
+// -- Static link order ---------------------------------------------------
+
+TEST_F(NinjaBridgeTest, DuplicateTransitiveLinkDeps) {
+  write_file("base.cc", "int base_func() { return 1; }\n");
+  write_file("mid1.cc",
+             "int base_func();\n"
+             "int mid1_func() { return base_func() + 1; }\n");
+  write_file("mid2.cc",
+             "int base_func();\n"
+             "int mid2_func() { return base_func() + 2; }\n");
+  write_file(
+      "main.cc",
+      "int mid1_func();\n"
+      "int mid2_func();\n"
+      "int main() { return (mid1_func() + mid2_func()) == 5 ? 0 : 1; }\n");
 
   Project p("dup_deps_test");
-  auto& base = p.add_library("base", { base_src.path });
-  auto& mid1 = p.add_library("mid1", { mid1_src.path });
-  auto& mid2 = p.add_library("mid2", { mid2_src.path });
+  auto& base = p.add_library("base", { "base.cc" });
+  auto& mid1 = p.add_library("mid1", { "mid1.cc" });
+  auto& mid2 = p.add_library("mid2", { "mid2.cc" });
   mid1.link(base);
   mid2.link(base);
-  auto& app = p.add_executable("app", { exe_src.path });
+  auto& app = p.add_executable("app", { "main.cc" });
   app.link(mid1).link(mid2);
 
-  testing::internal::CaptureStdout();
-  testing::internal::CaptureStderr();
-  const int result = NinjaBridge::build(p);
-  testing::internal::GetCapturedStdout();
-  testing::internal::GetCapturedStderr();
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_EQ(run(".ccbuild/bin/app"), 0);
+}
 
-  EXPECT_EQ(result, 0);
-  EXPECT_TRUE(std::filesystem::exists(".ccbuild/bin/app"));
+// -- Argument quoting ----------------------------------------------------
+
+TEST_F(NinjaBridgeTest, SourcePathWithSpaces) {
+  write_file("my src/main.cc", "int main() { return 0; }\n");
+
+  Project p("src_space_test");
+  p.add_executable("app", { "my src/main.cc" });
+
+  EXPECT_EQ(build(p).rc, 0);
+  EXPECT_EQ(run(".ccbuild/bin/app"), 0);
 }
 
 }  // namespace
-}  // namespace internal
-}  // namespace ccbuild
+}  // namespace ccbuild::internal

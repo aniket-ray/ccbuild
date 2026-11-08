@@ -4,10 +4,14 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "build.h"
@@ -17,269 +21,237 @@
 #include "disk_interface.h"
 #include "eval_env.h"
 #include "internal/compiler.h"
+#include "internal/layout.h"
+#include "internal/link_graph.h"
 #include "metrics.h"
 #include "state.h"
 #include "status_printer.h"
 
-namespace ccbuild {
+namespace ccbuild::internal {
 namespace {
 
-// -- BuildLogUser for fresh builds ---------------------------------------
+/// Parallelism used when the number of CPUs cannot be determined.
+constexpr int kDefaultParallelism = 4;
 
-/// Minimal BuildLogUser: no paths are dead since we always build the
-/// full dependency graph from scratch.
-struct NullBuildLogUser : public BuildLogUser {
-  bool IsPathDead(StringPiece) const override { return false; }
+/// Minimal BuildLogUser: no path is ever considered dead, since the full
+/// graph is rebuilt in memory on every run.
+struct NullBuildLogUser final : public BuildLogUser {
+  bool IsPathDead(StringPiece /*path*/) const override { return false; }
 };
 
-// -- EvalString helpers --------------------------------------------------
-
-/// Append literal text to an EvalString.
-void text(EvalString& es, const char* s) {
-  es.AddText(s);
+/// Append `fragment` to the shell command fragment `out`, space-separated.
+void append_fragment(std::string& out, std::string_view fragment) {
+  if (!out.empty()) {
+    out += ' ';
+  }
+  out += fragment;
 }
 
-/// Append a variable reference ($var) to an EvalString.
-void var(EvalString& es, const char* v) {
-  es.AddSpecial(v);
+/// The compiler flags for `target`'s sources: -I for each include
+/// directory, then the compile options, inserted as written.
+std::string compile_flags(const Target& target) {
+  std::string flags;
+  for (const auto& dir : compile_include_dirs(target)) {
+    append_fragment(flags, "-I" + dir);
+  }
+  for (const auto& option : target.compile_options()) {
+    append_fragment(flags, option);
+  }
+  return flags;
 }
 
-// -- Rule Creation -------------------------------------------------------
-
-/// Create the three Ninja build rules (cc, link, ar) and register them
-/// with the Ninja State object.
-///
-/// @param state    The Ninja State into which rules are added.
-/// @param compiler Full path to the C++ compiler binary.
-/// @param standard The C++ standard version (e.g. 17, 20).
-void create_rules(State& state, const std::string& compiler, int standard) {
-  const std::string std_flag = "-std=c++" + std::to_string(standard);
-
-  // -- cc: compile a single source file → object file --------------------
-  {
-    auto rule = std::make_unique<Rule>("cc");
-
-    EvalString cmd;
-    text(cmd, (compiler + " " + std_flag + " ").c_str());
-    var(cmd, "cflags");  // per-target compile options
-    text(cmd, " -MD -MF ");
-    var(cmd, "out");
-    text(cmd, ".d -c ");
-    var(cmd, "in");
-    text(cmd, " -o ");
-    var(cmd, "out");
-    rule->AddBinding("command", cmd);
-
-    EvalString depfile;
-    var(depfile, "out");
-    text(depfile, ".d");
-    rule->AddBinding("depfile", depfile);
-
-    EvalString deps;
-    text(deps, "gcc");
-    rule->AddBinding("deps", deps);
-
-    EvalString desc;
-    text(desc, "CC ");
-    var(desc, "out");
-    rule->AddBinding("description", desc);
-
-    state.bindings_.AddRule(std::move(rule));
-  }
-
-  // -- link: combine object files → executable ---------------------------
-  {
-    auto rule = std::make_unique<Rule>("link");
-
-    EvalString cmd;
-    text(cmd, (compiler + " ").c_str());
-    var(cmd, "ldflags");  // per-target link flags
-    text(cmd, " ");
-    var(cmd, "in");
-    text(cmd, " -o ");
-    var(cmd, "out");
-    rule->AddBinding("command", cmd);
-
-    EvalString desc;
-    text(desc, "LINK ");
-    var(desc, "out");
-    rule->AddBinding("description", desc);
-
-    state.bindings_.AddRule(std::move(rule));
-  }
-
-  // -- ar: archive object files → static library -------------------------
-  {
-    auto rule = std::make_unique<Rule>("ar");
-
-    EvalString cmd;
-    text(cmd, "ar rcs ");
-    var(cmd, "ldflags");  // per-target linker flags
-    text(cmd, " ");
-    var(cmd, "out");
-    text(cmd, " ");
-    var(cmd, "in");
-    rule->AddBinding("command", cmd);
-
-    EvalString desc;
-    text(desc, "AR ");
-    var(desc, "out");
-    rule->AddBinding("description", desc);
-
-    state.bindings_.AddRule(std::move(rule));
-  }
+/// Every library `target` links against, directly or transitively, each
+/// listed once, in depth-first order.
+std::vector<const Target*> transitive_libraries(const Target& target) {
+  std::vector<const Target*> libraries;
+  std::unordered_set<const Target*> visited;
+  std::function<void(const Target&)> visit = [&](const Target& t) {
+    for (const Target& dep : t.link_deps()) {
+      if (visited.insert(&dep).second) {
+        libraries.push_back(&dep);
+        visit(dep);
+      }
+    }
+  };
+  visit(target);
+  return libraries;
 }
 
-// -- Target Graph -> Ninja Edges -----------------------------------------
+/// The linker flags for `target`, inserted as written.
+std::string linker_flags(const Target& target) {
+  std::string flags;
+  for (const auto& option : target.link_options()) {
+    append_fragment(flags, option);
+  }
+  return flags;
+}
 
-/// Translate a single Target into Ninja Edges and Nodes.
+/// Translates a Project into Ninja rules and edges inside a Ninja State.
 ///
-/// Steps:
-///   1. Build the cflags string from include dirs (with visibility
-///      propagation) and compile options.
-///   2. Create a compile Edge for each source → object file.
-///   3. Create a link or archive Edge to produce the final artifact.
-///
-/// @return The output Node representing the final build artifact.
-Node* add_target_edges(State& state, const Target& target) {
-  const Rule* cc_rule = state.bindings_.LookupRule("cc");
-  const Rule* link_rule = state.bindings_.LookupRule("link");
-  const Rule* ar_rule = state.bindings_.LookupRule("ar");
+/// Ninja's Edge refers to its binding environment through a raw, non-owning
+/// pointer; this class owns those environments, so it must outlive any use
+/// of the State's edges (i.e. the Builder).
+class GraphBuilder {
+ public:
+  GraphBuilder(State& state, const CompilerInfo& compiler, int cxx_standard)
+      : state_(state) {
+    create_rules(compiler.path, cxx_standard);
+  }
 
-  // -- Build the per-target cflags string --------------------------------
-  std::string cflags;
+  /// Add the compile edges and the final link/archive edge for `target`.
+  ///
+  /// @return The node of the final artifact, or nullptr with `err` set.
+  Node* add_target(const Target& target, std::string& err) {
+    const std::string cflags = compile_flags(target);
 
-  {
-    std::unordered_set<std::string_view> seen;
-
-    // Append "-I <dir>" for each directory, deduplicated.
-    auto add_dir = [&](std::string_view dir) {
-      if (seen.insert(dir).second) {
-        if (!cflags.empty()) {
-          cflags += ' ';
-        }
-        cflags += "-I";
-        cflags += dir;
+    // One compile edge per source file.
+    std::vector<std::string> objects;
+    objects.reserve(target.sources().size());
+    for (const auto& src : target.sources()) {
+      objects.push_back(target.object_path(src));
+      const std::string& source = src;
+      if (!add_edge(cc_rule_, std::span(&source, 1), objects.back(),
+                    { { "cflags", cflags } }, err)) {
+        return nullptr;
       }
-    };
+    }
 
-    auto add_dirs = [&](std::span<const std::string> dirs) {
-      for (const auto& d : dirs) {
-        add_dir(d);
+    // The final artifact.
+    const std::string output = target.output_filename();
+    if (target.kind() == TargetKind::Executable) {
+      // Link inputs: own objects, then every transitive library archive.
+      std::vector<std::string> inputs = std::move(objects);
+      for (const Target* lib : transitive_libraries(target)) {
+        inputs.push_back(lib->output_filename());
       }
-    };
-
-    // Own directories: PRIVATE + PUBLIC.
-    add_dirs(target.include_dirs(Visibility::Private));
-    add_dirs(target.include_dirs(Visibility::Public));
-
-    // Transitive directories from link dependencies: PUBLIC + INTERFACE.
-    // Uses a depth-first traversal with a visited set to avoid cycles
-    // (the project validation already guarantees DAG, but this is defensive).
-    std::unordered_set<std::string_view> visited;
-    std::function<void(const Target&)> collect = [&](const Target& t) {
-      if (!visited.insert(t.name()).second) {
-        return;
+      if (!add_edge(link_rule_, inputs, output,
+                    { { "ldflags", linker_flags(target) } }, err)) {
+        return nullptr;
       }
-      add_dirs(t.include_dirs(Visibility::Public));
-      add_dirs(t.include_dirs(Visibility::Interface));
-      for (const Target& dep : t.link_deps()) {
-        collect(dep);
+    } else {
+      // A static library archives only its own objects.
+      if (!add_edge(ar_rule_, objects, output,
+                    { { "ldflags", linker_flags(target) } }, err)) {
+        return nullptr;
       }
-    };
+    }
+    return state_.LookupNode(output);
+  }
 
-    for (const Target& dep : target.link_deps()) {
-      collect(dep);
+ private:
+  using Bindings = std::vector<std::pair<std::string, std::string>>;
+
+  /// Register the three rules with the State.
+  void create_rules(const std::string& compiler, int cxx_standard) {
+    const std::string std_flag = "-std=c++" + std::to_string(cxx_standard);
+
+    // cc: compile one source file into an object file, recording header
+    // dependencies in a depfile that Ninja moves into its deps log.
+    {
+      auto rule = std::make_unique<Rule>("cc");
+      EvalString command;
+      command.AddText(compiler + " " + std_flag + " ");
+      command.AddSpecial("cflags");
+      command.AddText(" -MD -MF ");
+      command.AddSpecial("out");
+      command.AddText(".d -c ");
+      command.AddSpecial("in");
+      command.AddText(" -o ");
+      command.AddSpecial("out");
+      rule->AddBinding("command", command);
+      rule->AddBinding("depfile", eval({ out(), text(".d") }));
+      rule->AddBinding("deps", eval({ text("gcc") }));
+      rule->AddBinding("description", eval({ text("CC "), out() }));
+      cc_rule_ = add_rule(std::move(rule));
+    }
+
+    // link: link objects and archives into an executable.
+    {
+      auto rule = std::make_unique<Rule>("link");
+      EvalString command;
+      command.AddText(compiler + " ");
+      command.AddSpecial("ldflags");
+      command.AddText(" ");
+      command.AddSpecial("in");
+      command.AddText(" -o ");
+      command.AddSpecial("out");
+      rule->AddBinding("command", command);
+      rule->AddBinding("description", eval({ text("LINK "), out() }));
+      link_rule_ = add_rule(std::move(rule));
+    }
+
+    // ar: archive objects into a static library.
+    {
+      auto rule = std::make_unique<Rule>("ar");
+      EvalString command;
+      command.AddText("ar rcs ");
+      command.AddSpecial("ldflags");
+      command.AddText(" ");
+      command.AddSpecial("out");
+      command.AddText(" ");
+      command.AddSpecial("in");
+      rule->AddBinding("command", command);
+      rule->AddBinding("description", eval({ text("AR "), out() }));
+      ar_rule_ = add_rule(std::move(rule));
     }
   }
 
-  // Append per-target compile options to cflags.
-  for (const auto& opt : target.compile_options()) {
-    if (!cflags.empty()) {
-      cflags += ' ';
+  /// One piece of an EvalString: literal text, or a $variable reference.
+  struct Piece {
+    std::string value;
+    bool is_variable = false;
+  };
+  static Piece text(std::string s) { return { std::move(s), false }; }
+  static Piece out() { return { "out", true }; }
+
+  static EvalString eval(std::initializer_list<Piece> pieces) {
+    EvalString result;
+    for (const auto& piece : pieces) {
+      if (piece.is_variable) {
+        result.AddSpecial(piece.value);
+      } else {
+        result.AddText(piece.value);
+      }
     }
-    cflags += opt;
+    return result;
   }
 
-  // -- Compile each source → object file ---------------------------------
-  std::vector<Node*> obj_nodes;
-  for (const auto& src : target.sources()) {
-    const std::string obj = target.object_path(src);
+  const Rule* add_rule(std::unique_ptr<Rule> rule) {
+    const Rule* ptr = rule.get();
+    state_.bindings_.AddRule(std::move(rule));
+    return ptr;
+  }
 
-    // Ensure the output directory exists.
-    auto obj_dir = std::filesystem::path(obj).parent_path();
-    if (!obj_dir.empty()) {
-      std::filesystem::create_directories(obj_dir);
+  /// Add an edge `inputs -> output` using `rule`, with per-edge bindings.
+  bool add_edge(const Rule* rule, std::span<const std::string> inputs,
+                const std::string& output, const Bindings& bindings,
+                std::string& err) {
+    Edge* edge = state_.AddEdge(rule);
+
+    auto env = std::make_unique<BindingEnv>(&state_.bindings_);
+    for (const auto& [key, value] : bindings) {
+      env->AddBinding(key, value);
     }
+    edge->env_ = env.get();
+    envs_.push_back(std::move(env));
 
-    Edge* edge = state.AddEdge(cc_rule);
-
-    // Set per-edge cflags binding.
-    // Note: env_ takes raw ownership via BindingEnv::release().
-    // This matches Ninja's internal ownership model.
-    auto env = std::make_unique<BindingEnv>(&state.bindings_);
-    env->AddBinding("cflags", cflags);
-    edge->env_ = env.release();
-
-    state.AddIn(edge, src, 0);
-    std::string err;
-    state.AddOut(edge, obj, 0, &err);
-
-    obj_nodes.push_back(state.GetNode(obj, 0));
-  }
-
-  // -- Final artifact: link or archive -----------------------------------
-  const std::string output = target.output_filename();
-
-  // Ensure the output directory exists (e.g. .ccbuild/bin/, .ccbuild/lib/).
-  auto out_dir = std::filesystem::path(output).parent_path();
-  if (!out_dir.empty()) {
-    std::filesystem::create_directories(out_dir);
-  }
-
-  const Rule* final_rule =
-      (target.kind() == TargetKind::Executable) ? link_rule : ar_rule;
-
-  Edge* final_edge = state.AddEdge(final_rule);
-  auto final_env = std::make_unique<BindingEnv>(&state.bindings_);
-
-  // Build ldflags from per-target link options.
-  std::string ldflags;
-  for (const auto& opt : target.link_options()) {
-    if (!ldflags.empty()) {
-      ldflags += ' ';
+    for (const auto& input : inputs) {
+      state_.AddIn(edge, input, 0);
     }
-    ldflags += opt;
-  }
-  final_env->AddBinding("ldflags", ldflags);
-  final_edge->env_ = final_env.release();
-
-  // Inputs: all compiled object files.
-  for (auto* obj_node : obj_nodes) {
-    state.AddIn(final_edge, obj_node->path(), 0);
+    return state_.AddOut(edge, output, 0, &err);
   }
 
-  // Libraries: only archive own object files (no link-dep archives).
-  // Executables: recursively collect all transitive library archives.
-  if (target.kind() == TargetKind::Executable) {
-    std::unordered_set<std::string_view> link_visited;
-    std::function<void(const Target&)> collect_link_inputs =
-        [&](const Target& t) {
-          for (const Target& dep : t.link_deps()) {
-            if (link_visited.insert(dep.name()).second) {
-              const std::string dep_output = dep.output_filename();
-              state.AddIn(final_edge, dep_output, 0);
-              collect_link_inputs(dep);
-            }
-          }
-        };
-    collect_link_inputs(target);
-  }
+  State& state_;
+  const Rule* cc_rule_ = nullptr;
+  const Rule* link_rule_ = nullptr;
+  const Rule* ar_rule_ = nullptr;
+  std::vector<std::unique_ptr<BindingEnv>> envs_;
+};
 
-  std::string err;
-  state.AddOut(final_edge, output, 0, &err);
-
-  return state.GetNode(output, 0);
+/// Number of parallel jobs: one per CPU.
+int default_parallelism() {
+  const unsigned cpus = std::thread::hardware_concurrency();
+  return (cpus == 0) ? kDefaultParallelism : static_cast<int>(cpus);
 }
 
 }  // namespace
@@ -288,102 +260,104 @@ Node* add_target_edges(State& state, const Target& target) {
 
 int NinjaBridge::build(const Project& project) {
   // 1. Detect the C++ compiler.
-  auto compiler = internal::detect_compiler();
+  const auto compiler = detect_compiler();
   if (!compiler) {
-    fprintf(stderr,
-            "ccbuild: error: no C++ compiler found.\n"
-            "  Set $CXX or install g++/clang++.\n");
+    std::fprintf(stderr,
+                 "ccbuild: error: no C++ compiler found.\n"
+                 "  Set $CXX or install g++/clang++.\n");
     return 1;
   }
-  fprintf(stderr, "ccbuild: using %.*s %s (%s)\n",
-          static_cast<int>(compiler->kind_str().size()),
-          compiler->kind_str().data(), compiler->version.c_str(),
-          compiler->path.c_str());
+  std::fprintf(stderr, "ccbuild: using %.*s %s (%s)\n",
+               static_cast<int>(compiler->kind_str().size()),
+               compiler->kind_str().data(), compiler->version.c_str(),
+               compiler->path.c_str());
 
-  // 2. Create the Ninja build state and rules.
+  // 2. Build the Ninja graph.  Libraries first, so their archive nodes
+  //    exist (with their producing edges) before executables reference them.
   State state;
-  create_rules(state, compiler->path, project.standard());
-
-  // 3. Add edges for each target.
-  //    Libraries are processed before executables so their output nodes
-  //    exist when executables reference them as link inputs.
-  std::vector<Node*> output_nodes;
-  for (const auto& t : project.targets()) {
-    if (t->kind() == TargetKind::StaticLibrary) {
-      output_nodes.push_back(add_target_edges(state, *t));
+  GraphBuilder graph(state, *compiler, project.standard());
+  std::vector<Node*> outputs;
+  std::string err;
+  for (const TargetKind kind :
+       { TargetKind::StaticLibrary, TargetKind::Executable }) {
+    for (const auto& target : project.targets()) {
+      if (target->kind() != kind) {
+        continue;
+      }
+      Node* node = graph.add_target(*target, err);
+      if (node == nullptr) {
+        std::fprintf(stderr, "ccbuild: error: target '%.*s': %s\n",
+                     static_cast<int>(target->name().size()),
+                     target->name().data(), err.c_str());
+        return 1;
+      }
+      outputs.push_back(node);
     }
   }
-  for (const auto& t : project.targets()) {
-    if (t->kind() == TargetKind::Executable) {
-      output_nodes.push_back(add_target_edges(state, *t));
-    }
+
+  // 3. Open the build and deps logs (they make builds incremental).
+  std::error_code ec;
+  std::filesystem::create_directories(layout::kBuildDir, ec);
+  if (ec) {
+    std::fprintf(stderr, "ccbuild: error: cannot create %s: %s\n",
+                 std::string(layout::kBuildDir).c_str(), ec.message().c_str());
+    return 1;
   }
 
-  // 4. Configure the builder.
-  BuildConfig config;
-  config.verbosity = BuildConfig::NORMAL;
-  config.parallelism = std::thread::hardware_concurrency();
-
-  static constexpr int kDefaultParallelism = 4;
-  if (config.parallelism == 0) {
-    config.parallelism = kDefaultParallelism;
-  }
-
-  // 5. Set up build infrastructure (logs, disk, status).
+  const std::string build_log_path(layout::kBuildLogPath);
+  const std::string deps_log_path(layout::kDepsLogPath);
   BuildLog build_log;
   DepsLog deps_log;
+  const NullBuildLogUser log_user;
+
+  if (build_log.Load(build_log_path, &err) == LOAD_ERROR) {
+    std::fprintf(stderr, "ccbuild: warning: loading build log: %s\n",
+                 err.c_str());
+    err.clear();
+  }
+  if (!build_log.OpenForWrite(build_log_path, log_user, &err)) {
+    std::fprintf(stderr, "ccbuild: error: opening build log: %s\n",
+                 err.c_str());
+    return 1;
+  }
+  if (deps_log.Load(deps_log_path, &state, &err) == LOAD_ERROR) {
+    std::fprintf(stderr, "ccbuild: warning: loading deps log: %s\n",
+                 err.c_str());
+    err.clear();
+  }
+  if (!deps_log.OpenForWrite(deps_log_path, &err)) {
+    std::fprintf(stderr, "ccbuild: error: opening deps log: %s\n", err.c_str());
+    return 1;
+  }
+
+  // 4. Run the build.
+  BuildConfig config;
+  config.verbosity = BuildConfig::NORMAL;
+  config.parallelism = default_parallelism();
+
   RealDiskInterface disk_interface;
   StatusPrinter status(config);
-
-  std::filesystem::create_directories(".ccbuild");
-
-  std::string err;
-  NullBuildLogUser log_user;
-
-  // Load existing logs for incremental build support.
-  if (!build_log.Load(".ccbuild/.ninja_log", &err)) {
-    fprintf(stderr, "ccbuild: warning: loading build log: %s\n", err.c_str());
-    err.clear();
-  }
-  if (!build_log.OpenForWrite(".ccbuild/.ninja_log", log_user, &err)) {
-    fprintf(stderr, "ccbuild: error opening build log: %s\n", err.c_str());
-    return 1;
-  }
-  if (!deps_log.Load(".ccbuild/.ninja_deps", &state, &err)) {
-    fprintf(stderr, "ccbuild: warning: loading deps log: %s\n", err.c_str());
-    err.clear();
-  }
-  if (!deps_log.OpenForWrite(".ccbuild/.ninja_deps", &err)) {
-    fprintf(stderr, "ccbuild: error opening deps log: %s\n", err.c_str());
-    return 1;
-  }
-
-  // 6. Create the builder and add all output nodes as build targets.
-  const int64_t start = GetTimeMillis();
   Builder builder(&state, config, &build_log, &deps_log, &disk_interface,
-                  &status, start);
+                  &status, GetTimeMillis());
 
-  for (auto* node : output_nodes) {
+  for (Node* node : outputs) {
     if (!builder.AddTarget(node, &err)) {
-      fprintf(stderr, "ccbuild: error adding target: %s\n", err.c_str());
+      std::fprintf(stderr, "ccbuild: error: %s\n", err.c_str());
       return 1;
     }
   }
 
-  // 7. Check if already up to date.
   if (builder.AlreadyUpToDate()) {
-    printf("ccbuild: nothing to do, already up to date.\n");
+    std::printf("ccbuild: nothing to do, already up to date.\n");
     return 0;
   }
 
-  // 8. Run the build.
   const ExitStatus exit_status = builder.Build(&err);
   if (exit_status != ExitSuccess) {
-    fprintf(stderr, "ccbuild: build failed: %s\n", err.c_str());
+    std::fprintf(stderr, "ccbuild: build failed: %s\n", err.c_str());
     return static_cast<int>(exit_status);
   }
-
   return 0;
 }
 
-}  // namespace ccbuild
+}  // namespace ccbuild::internal

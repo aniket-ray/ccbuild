@@ -63,6 +63,7 @@ int main() {
                                       "src/core/static_library.cc",
                                       "src/core/target.cc",
                                       "src/internal/compiler.cc",
+                                      "src/internal/link_graph.cc",
                                       "src/internal/ninja_bridge.cc",
                                       "src/internal/plan_printer.cc",
                                       "src/internal/process.cc",

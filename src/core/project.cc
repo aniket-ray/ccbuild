@@ -60,7 +60,7 @@ int Project::build(bool dry_run) {
     return 0;
   }
   std::fflush(stdout);  // keep the plan ahead of Ninja's progress output
-  return NinjaBridge::build(*this);
+  return internal::NinjaBridge::build(*this);
 }
 
 }  // namespace ccbuild
