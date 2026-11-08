@@ -9,7 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Flags applied per-target (ccbuildlib, ninjacore, ccbuild_tests) so that the
 # ccbuild CLI binary and the libraries it ships for end-user linking are NOT
 # polluted with profiler runtime references.
-option(CCBUILD_COVERAGE "Enable code coverage instrumentation" ON)
+option(CCBUILD_COVERAGE "Enable code coverage instrumentation" OFF)
 if (CCBUILD_COVERAGE)
     message(STATUS "Code coverage enabled")
     if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
