@@ -293,6 +293,31 @@ TEST_F(NinjaBridgeTest, DuplicateTransitiveLinkDeps) {
   EXPECT_EQ(run(".ccbuild/bin/app"), 0);
 }
 
+// Regression test: a shared library dependency must be linked after every
+// library that uses it.  base has two object files, so a link order of
+// "mid1 base mid2" pulls in only base_a.o and leaves base_b() unresolved.
+TEST_F(NinjaBridgeTest, SharedDependencyIsLinkedAfterAllUsers) {
+  write_file("base_a.cc", "int base_a() { return 1; }\n");
+  write_file("base_b.cc", "int base_b() { return 2; }\n");
+  write_file("mid1.cc", "int base_a();\nint mid1() { return base_a(); }\n");
+  write_file("mid2.cc", "int base_b();\nint mid2() { return base_b(); }\n");
+  write_file("main.cc",
+             "int mid1();\nint mid2();\n"
+             "int main() { return mid1() + mid2() == 3 ? 0 : 1; }\n");
+
+  Project p("link_order_test");
+  auto& base = p.add_library("base", { "base_a.cc", "base_b.cc" });
+  auto& mid1 = p.add_library("mid1", { "mid1.cc" });
+  auto& mid2 = p.add_library("mid2", { "mid2.cc" });
+  mid1.link(base);
+  mid2.link(base);
+  p.add_executable("app", { "main.cc" }).link(mid1).link(mid2);
+
+  const auto result = build(p);
+  EXPECT_EQ(result.rc, 0) << result.out;
+  EXPECT_EQ(run(".ccbuild/bin/app"), 0);
+}
+
 // -- Argument quoting ----------------------------------------------------
 
 TEST_F(NinjaBridgeTest, SourcePathWithSpaces) {

@@ -1,6 +1,8 @@
 #include "internal/link_graph.h"
 
+#include <algorithm>
 #include <functional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -8,6 +10,29 @@
 #include <vector>
 
 namespace ccbuild::internal {
+
+std::vector<const Target*> link_order(const Target& target) {
+  // Reverse post-order of a depth-first search is a topological order:
+  // every node comes before everything reachable from it.  Visiting each
+  // node's dependencies in reverse declaration order makes the reversed
+  // result list independent siblings in declaration order.
+  std::vector<const Target*> post_order;
+  std::unordered_set<const Target*> visited{ &target };
+
+  std::function<void(const Target&)> visit = [&](const Target& t) {
+    for (const Target& dep : t.link_deps() | std::views::reverse) {
+      if (visited.insert(&dep).second) {
+        visit(dep);
+      }
+    }
+    post_order.push_back(&t);
+  };
+  visit(target);
+
+  post_order.pop_back();  // `target` itself, which finishes last
+  std::ranges::reverse(post_order);
+  return post_order;
+}
 
 std::vector<std::string> compile_include_dirs(const Target& target) {
   std::vector<std::string> dirs;

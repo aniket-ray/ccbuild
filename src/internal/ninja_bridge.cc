@@ -2,7 +2,6 @@
 
 #include <cstdio>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -10,7 +9,6 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -60,23 +58,6 @@ std::string compile_flags(const Target& target) {
   return flags;
 }
 
-/// Every library `target` links against, directly or transitively, each
-/// listed once, in depth-first order.
-std::vector<const Target*> transitive_libraries(const Target& target) {
-  std::vector<const Target*> libraries;
-  std::unordered_set<const Target*> visited;
-  std::function<void(const Target&)> visit = [&](const Target& t) {
-    for (const Target& dep : t.link_deps()) {
-      if (visited.insert(&dep).second) {
-        libraries.push_back(&dep);
-        visit(dep);
-      }
-    }
-  };
-  visit(target);
-  return libraries;
-}
-
 /// The linker flags for `target`, inserted as written.
 std::string linker_flags(const Target& target) {
   std::string flags;
@@ -119,9 +100,10 @@ class GraphBuilder {
     // The final artifact.
     const std::string output = target.output_filename();
     if (target.kind() == TargetKind::Executable) {
-      // Link inputs: own objects, then every transitive library archive.
+      // Link inputs: own objects, then every transitive library archive in
+      // dependency order.
       std::vector<std::string> inputs = std::move(objects);
-      for (const Target* lib : transitive_libraries(target)) {
+      for (const Target* lib : link_order(target)) {
         inputs.push_back(lib->output_filename());
       }
       if (!add_edge(link_rule_, inputs, output,
